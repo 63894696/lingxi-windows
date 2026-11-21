@@ -1,0 +1,492 @@
+    Checking prisiragent_ime v0.7.0 (D:\Projects\lingxi-windows\prisIragent_ime)
+warning: unused import: `WTS_INFO_CLASS`
+   --> src\register.rs:412:22
+    |
+412 |         WTSUserName, WTS_INFO_CLASS,
+    |                      ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::os::windows::ffi::OsStringExt`
+   --> src\register.rs:926:5
+    |
+926 | use std::os::windows::ffi::OsStringExt;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::windows::ffi::OsStringExt`
+    --> src\register.rs:1667:5
+     |
+1667 | use std::os::windows::ffi::OsStringExt;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `r`
+   --> src\tsf_input_processor.rs:910:21
+    |
+910 |                 let r = crate::edit_session::run_edit_session(
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_r`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `cur_page`
+   --> src\tsf_input_processor.rs:950:38
+    |
+950 |                     let (cand_words, cur_page, total_pages) = {
+    |                                      ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cur_page`
+
+warning: unused variable: `total_pages`
+   --> src\tsf_input_processor.rs:950:48
+    |
+950 |                     let (cand_words, cur_page, total_pages) = {
+    |                                                ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_total_pages`
+
+warning: unused variable: `r`
+    --> src\tsf_input_processor.rs:1126:33
+     |
+1126 | ...                   let r = crate::edit_session::run_edit_session(
+     |                           ^ help: if this is intentional, prefix it with an underscore: `_r`
+
+warning: unused variable: `r`
+   --> src\edit_session.rs:160:33
+    |
+160 | ...                   let r = unsafe { ctx.SetSelection(ec, &[sel]) };
+    |                           ^ help: if this is intentional, prefix it with an underscore: `_r`
+
+warning: unused variable: `e`
+   --> src\edit_session.rs:166:21
+    |
+166 |                 Err(e) => {
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\edit_session.rs:209:32
+    |
+209 |                     if let Err(e) = unsafe { range.SetText(ec, 0, &wide) } {
+    |                                ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `r`
+   --> src\edit_session.rs:221:29
+    |
+221 |                         let r = unsafe { ctx.SetSelection(ec, &[sel]) };
+    |                             ^ help: if this is intentional, prefix it with an underscore: `_r`
+
+warning: unused variable: `e`
+   --> src\edit_session.rs:226:21
+    |
+226 |                 Err(e) => {
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `r`
+   --> src\edit_session.rs:292:17
+    |
+292 |             let r = unsafe { range.SetText(ec, TF_ST_CORRECTION, &[]) };
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_r`
+
+warning: unused variable: `r`
+   --> src\edit_session.rs:303:17
+    |
+303 |             let r = unsafe { comp.EndComposition(ec) };
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_r`
+
+warning: unused variable: `sent`
+   --> src\panels.rs:752:9
+    |
+752 |     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_sent`
+
+warning: value assigned to `si` is never read
+   --> src\userdict_window.rs:468:13
+    |
+468 |             si.fMask = SIF_POS;
+    |             ^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\userdict_window.rs:819:17
+    |
+819 |             let mut g = st.lock().unwrap();
+    |                 ----^
+    |                 |
+    |                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\userdict_window.rs:854:17
+    |
+854 |             let mut g = st.lock().unwrap();
+    |                 ----^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: unused variable: `cx`
+   --> src\userdict_window.rs:877:17
+    |
+877 |             let cx = (lparam.0 & 0xFFFF) as i16 as i32;
+    |                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+
+warning: unused variable: `cw`
+   --> src\userdict_window.rs:881:17
+    |
+881 |             let cw = rc.right - rc.left;
+    |                 ^^ help: if this is intentional, prefix it with an underscore: `_cw`
+
+warning: unused variable: `writable`
+   --> src\userdict_window.rs:945:44
+    |
+945 |     let (main_rows, main_scroll, main_sel, writable, search_term, page, total,
+    |                                            ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_writable`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:139:17
+    |
+139 |             Err(e) => { hlog!("HwInk: CoCreate InkDisp fail: {e}"); return Vec::new(); }
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:143:17
+    |
+143 |             Err(e) => { hlog!("HwInk: ink.Strokes fail: {e}"); return Vec::new(); }
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:162:21
+    |
+162 |                 Err(e) => { hlog!("HwInk: InitVariantFromInt32Array fail: {e}"); continue; }
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:166:32
+    |
+166 |                     if let Err(e) = ink_strokes.Add(&stroke) {
+    |                                ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:170:21
+    |
+170 |                 Err(e) => hlog!("HwInk: CreateStroke fail: {e}"),
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:176:17
+    |
+176 |             Err(e) => { hlog!("HwInk: CoCreate RecognizerContext fail: {e}"); return Vec::new(); }
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:178:20
+    |
+178 |         if let Err(e) = ctx.putref_Strokes(&ink_strokes) {
+    |                    ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:183:20
+    |
+183 |         if let Err(e) = ctx.Recognize(&mut status, &mut result) {
+    |                    ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:196:17
+    |
+196 |             Err(e) => { hlog!("HwInk: AlternatesFromSelection fail: {e}"); return Vec::new(); }
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:272:13
+    |
+272 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:312:48
+    |
+312 | ...                   } else if let Some(e) = v.get("error") {
+    |                                          ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\handwriting_panel.rs:317:25
+    |
+317 |                     Err(e) => hlog!("HwPanel: read resp fail: {e}"),
+    |                         ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `sent`
+   --> src\handwriting_panel.rs:391:9
+    |
+391 |     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_sent`
+
+warning: unused variable: `sent`
+   --> src\handwriting_panel.rs:416:9
+    |
+416 |     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_sent`
+
+warning: variable does not need to be mutable
+   --> src\handwriting_panel.rs:622:13
+    |
+622 |         let mut draw_stroke = |st: &Stroke| {
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `e`
+  --> src\conversion_mode.rs:29:16
+   |
+29 |     if let Err(e) = set_mode_inner(ptim, tid, is_chinese) {
+   |                ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unnecessary `unsafe` block
+   --> src\com_class_factory.rs:121:22
+    |
+ 98 |     unsafe {
+    |     ------ because it's nested under this `unsafe` block
+...
+121 |             let ms = unsafe { windows::Win32::System::SystemInformation::GetTickCount() };
+    |                      ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `path`
+   --> src\register.rs:641:9
+    |
+641 |     let path = format!(
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: type `HwPanelState` is more private than the item `handwriting_panel::hide`
+   --> src\handwriting_panel.rs:523:1
+    |
+523 | pub(crate) fn hide(state: &Arc<Mutex<RefCell<HwPanelState>>>) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ function `handwriting_panel::hide` is reachable at visibility `pub(crate)`
+    |
+note: but type `HwPanelState` is only usable at visibility `pub(self)`
+   --> src\handwriting_panel.rs:84:1
+    |
+ 84 | struct HwPanelState {
+    | ^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: fields `user_add`, `user_remove`, `user_clear`, `dict_search`, and `cycle_script` are never read
+   --> src\ffi.rs:83:5
+    |
+ 72 | pub(crate) struct ImeDll {
+    |                   ------ fields in this struct
+...
+ 83 |     user_add: Option<FnUserAdd>,
+    |     ^^^^^^^^
+ 84 |     user_remove: Option<FnUserRemove>,
+    |     ^^^^^^^^^^^
+ 85 |     user_clear: Option<FnUserClear>,
+    |     ^^^^^^^^^^
+ 86 |     dict_search: Option<FnDictSearch>,
+    |     ^^^^^^^^^^^
+...
+106 |     cycle_script: Option<FnCycleScript>,
+    |     ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `cycle_script_mode` is never used
+   --> src\ffi.rs:369:15
+    |
+369 | pub(crate) fn cycle_script_mode(handle: *mut c_void) -> i32 {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `user_dict_available` is never used
+   --> src\ffi.rs:447:15
+    |
+447 | pub(crate) fn user_dict_available() -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `user_dict_add` is never used
+   --> src\ffi.rs:469:15
+    |
+469 | pub(crate) fn user_dict_add(pinyin: &str, word: &str) -> bool {
+    |               ^^^^^^^^^^^^^
+
+warning: function `user_dict_remove` is never used
+   --> src\ffi.rs:477:15
+    |
+477 | pub(crate) fn user_dict_remove(pinyin: &str, word: &str) -> i32 {
+    |               ^^^^^^^^^^^^^^^^
+
+warning: function `user_dict_clear` is never used
+   --> src\ffi.rs:485:15
+    |
+485 | pub(crate) fn user_dict_clear() -> bool {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `dict_search_json` is never used
+   --> src\ffi.rs:550:15
+    |
+550 | pub(crate) fn dict_search_json(term: &str) -> Option<String> {
+    |               ^^^^^^^^^^^^^^^^
+
+warning: field `shift_held` is never read
+   --> src\tsf_input_processor.rs:130:16
+    |
+108 | pub struct TsfInputProcessor {
+    |            ----------------- field in this struct
+...
+130 |     pub(crate) shift_held: Arc<Mutex<bool>>,
+    |                ^^^^^^^^^^
+
+warning: associated function `wants_key_state` is never used
+    --> src\tsf_input_processor.rs:1316:19
+     |
+1303 | impl TsfInputProcessor {
+     | ---------------------- associated function in this implementation
+...
+1316 |     pub(crate) fn wants_key_state(vk: u16, buf_empty: bool, cands_empty: bool) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+
+warning: variant `EndComposition` is never constructed
+  --> src\edit_session.rs:37:5
+   |
+27 | pub(crate) enum DocOp {
+   |                 ----- variant in this enum
+...
+37 |     EndComposition,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `DocOp` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: fields `context`, `client_tid`, `composition`, and `composition_range` are never read
+   --> src\panels.rs:708:5
+    |
+707 | struct CommitChannel {
+    |        ------------- fields in this struct
+708 |     context: Arc<Mutex<Option<windows::Win32::UI::TextServices::ITfContext>>>,
+    |     ^^^^^^^
+709 |     client_tid: Arc<Mutex<u32>>,
+    |     ^^^^^^^^^^
+710 |     composition: Arc<Mutex<Option<windows::Win32::UI::TextServices::ITfComposition>>>,
+    |     ^^^^^^^^^^^
+711 |     composition_range: Arc<Mutex<Option<windows::Win32::UI::TextServices::ITfRange>>>,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `COL_DEL` is never used
+  --> src\userdict_window.rs:61:7
+   |
+61 | const COL_DEL: u32 = 0x003C3CD2;     // 「删」按钮红(BGR)
+   |       ^^^^^^^
+
+warning: constant `DEL_BTN_W` is never used
+  --> src\userdict_window.rs:74:7
+   |
+74 | const DEL_BTN_W: i32 = 40;           // 行尾「删」按钮宽
+   |       ^^^^^^^^^
+
+warning: constant `COL_WORD_RATIO` is never used
+  --> src\userdict_window.rs:79:7
+   |
+79 | const COL_WORD_RATIO: i32 = 44;      // 「词」占 44%
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `COL_PY_RATIO` is never used
+  --> src\userdict_window.rs:80:7
+   |
+80 | const COL_PY_RATIO: i32 = 32;        // 「拼音」占 32%
+   |       ^^^^^^^^^^^^
+
+warning: variant `User` is never constructed
+   --> src\userdict_window.rs:107:12
+    |
+107 | enum Tab { User, All }
+    |      ---   ^^^^
+    |      |
+    |      variant in this enum
+    |
+    = note: `Tab` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `key`, `value`, and `seq` are never read
+   --> src\userdict_window.rs:111:5
+    |
+110 | struct DictRow {
+    |        ------- fields in this struct
+111 |     key: String,
+    |     ^^^
+112 |     value: String,
+    |     ^^^^^
+...
+115 |     seq: i64,
+    |     ^^^
+    |
+    = note: `DictRow` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `source` is never read
+   --> src\userdict_window.rs:124:5
+    |
+120 | struct MainRow {
+    |        ------- field in this struct
+...
+124 |     source: String,
+    |     ^^^^^^
+    |
+    = note: `MainRow` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `destroy` is never used
+   --> src\userdict_window.rs:557:15
+    |
+557 | pub(crate) fn destroy() {
+    |               ^^^^^^^
+
+warning: function `refresh_ui` is never used
+   --> src\userdict_window.rs:581:4
+    |
+581 | fn refresh_ui(hwnd: HWND) {
+    |    ^^^^^^^^^^
+
+warning: function `show_dynamic` is never used
+  --> src\about_window.rs:95:15
+   |
+95 | pub(crate) fn show_dynamic(title: &str, body: &str) {
+   |               ^^^^^^^^^^^^
+
+warning: unused `windows::Win32::Foundation::BOOL` that must be used
+    --> src\panels.rs:1097:13
+     |
+1097 |             MoveToEx(hdc, grid_x0, y, None);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+1097 |             let _ = MoveToEx(hdc, grid_x0, y, None);
+     |             +++++++
+
+warning: unused `windows::Win32::Foundation::BOOL` that must be used
+    --> src\panels.rs:1098:13
+     |
+1098 |             LineTo(hdc, grid_x0 + gw, y);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+1098 |             let _ = LineTo(hdc, grid_x0 + gw, y);
+     |             +++++++
+
+warning: unused `windows::Win32::Foundation::BOOL` that must be used
+    --> src\panels.rs:1102:13
+     |
+1102 |             MoveToEx(hdc, x, PAD, None);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+1102 |             let _ = MoveToEx(hdc, x, PAD, None);
+     |             +++++++
+
+warning: unused `windows::Win32::Foundation::BOOL` that must be used
+    --> src\panels.rs:1103:13
+     |
+1103 |             LineTo(hdc, x, PAD + gh);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: use `let _ = ...` to ignore the resulting value
+     |
+1103 |             let _ = LineTo(hdc, x, PAD + gh);
+     |             +++++++
+
+warning: `prisiragent_ime` (lib) generated 65 warnings (run `cargo fix --lib -p prisiragent_ime` to apply 37 suggestions)
+    Finished `release` profile [optimized] target(s) in 4.01s

@@ -1,0 +1,20 @@
+{
+  "plugins": [
+    {
+      "id": "voice",
+      "name": "语音听写",
+      "exe": "C:/Program Files/PrisirIME/voice/lingxi_voice.exe",
+      "event": "PrisirLingXi_VoiceToggle_Event",
+      "button": "语",
+      "enabled": true
+    },
+    {
+      "id": "ai",
+      "name": "AI 助手",
+      "exe": "C:/Program Files/PrisirAI/PrisirAI.vbs",
+      "event": "PrisirLingXi_AiToggle_Event",
+      "button": "AI",
+      "enabled": true
+    }
+  ]
+}

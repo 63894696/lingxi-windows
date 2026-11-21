@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# venv
+venv/
+.venv/
+env/
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# voice_input 私有
+*.log
+.env
+
+# 模型文件(大文件不入库)
+models/
+*.onnx
+*.bin
+
+# OS
+.DS_Store
+Thumbs.db

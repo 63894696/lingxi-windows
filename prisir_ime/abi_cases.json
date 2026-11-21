@@ -1,0 +1,21 @@
+{
+  "_comment": "三端共用的 ABI 冒烟用例：Windows DLL / Linux .so / Android JNI 都跑这一份。改引擎后三端都必须过。",
+  "abi": 1,
+  "cases": [
+    {"kind": "query", "in": "nihao", "first": "你好", "note": "全拼"},
+    {"kind": "query", "in": "shijie", "first": "世界", "note": "全拼（精确命中优先）"},
+    {"kind": "query", "in": "sj", "contains": "世界", "note": "简拼"},
+    {"kind": "query", "in": "zhrmghg", "contains": "中华人民共和国", "note": "每字单字母"},
+    {"kind": "query", "in": "jintiantianqi", "contains": "今天天气", "note": "混拼/整句"},
+    {"kind": "query", "in": "duomotai", "first": "多模态", "note": "精确全拼必须第一（P0 修复）"},
+    {"kind": "query", "in": "zhishizhengliu", "first": "知识蒸馏", "note": "领域术语（管线）"},
+    {"kind": "query", "in": "niaoduzhengwanqi", "first": "尿毒症晚期", "note": "词库抢救（原 key='100'）"},
+    {"kind": "query", "in": "zi", "contains_any": ["至", "之", "直", "质", "制"], "note": "模糊音候选可翻到"},
+    {"kind": "decode", "in": "zhrmghg", "contains": "中华人民共和国", "note": "束搜索整句"},
+    {"kind": "decode", "in": "jintiantianqi", "first_sentence": "今天天气", "note": "束搜索整句"},
+    {"kind": "classify", "in": "hello", "expect": 2, "note": "中英判定：英文"},
+    {"kind": "classify", "in": "nihao", "expect": 1, "note": "中英判定：拼音"},
+    {"kind": "classify", "in": "s", "expect": 3, "note": "中英判定：单字母存疑"},
+    {"kind": "punct_roundtrip", "in": ",.", "expect": "，。", "note": "P0 智能标点（ASCII → 中文）"}
+  ]
+}

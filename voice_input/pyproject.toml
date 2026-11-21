@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-input"
+version = "0.1.0"
+description = "本地语音输入工具 — ADR-001 基础版(双 daemon + orchestrator + SAPI + SenseVoice Small)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "OI 用户", email = "user@example.com"},
+]
+license = {text = "MIT"}
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "websockets>=12.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+    "onnxruntime>=1.17",     # SenseVoice Small 推理
+    "silero-vad>=5.1",       # silero-vad VAD
+    "pywin32>=306; sys_platform == 'win32'",  # Windows SAPI + IME + 剪贴板 + 热键
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "requests>=2.31",        # e2e 测试用
+]
+
+[project.scripts]
+# 3 个 daemon entry point(用户用 python -m voice_input.X 启动,这里只是声明意图)
+voice-input-asr = "voice_input.asr_daemon:main"
+voice-input-tts = "voice_input.tts_daemon:main"
+voice-input-orchestrator = "voice_input.orchestrator:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+voice_input = ["py.typed"]
