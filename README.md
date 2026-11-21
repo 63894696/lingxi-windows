@@ -1,57 +1,59 @@
-﻿# 灵犀拼音 · Windows 端工作区
+﻿# 灵犀拼音 · Windows
 
-迁自 `oi_enhancements`（2026-11-20），与 `D:\Projects\lingxi-android` 并列。
+本地中文拼音输入法（Windows TSF）。与 [Android](https://github.com/63894696/lingxi-android)、[Linux](https://github.com/63894696/lingxi-linux) 共用同一套 Rust 引擎，候选、整句与词库学习行为一致。
 
-## 布局
+**官网下载**：https://www.babelspan.com/prisir-ime.html  
+**许可证**：Apache License 2.0
 
-| 路径 | 说明 |
+## 功能概览
+
+- **拼音输入**：全拼 / 混拼候选、整句解码、学习上屏
+- **简繁切换**：本地转换，不依赖网络
+- **语音听写（可选插件）**：本机识别，不外发音频
+- **个人词库**：选词自学习；词库管理、黑白名单、导入导出——百分百本机自主管理
+- **开放 API（可选）**：默认关闭；开启后仅监听本机 `127.0.0.1`，供本机 AI Agent / 脚本按习惯协助配置输入法
+
+## 隐私
+
+严格隐私保护，完全离线无账号：
+
+- 键入内容、候选与词库只保存在本机，不上传输入正文
+- 无账号登录、无行为画像、不出售输入数据
+- 输入法本身不主动发起任何网络请求
+- 开放 API 默认关闭；开启后也不对外网暴露
+
+## 仓库结构（简述）
+
+| 目录 | 说明 |
 |------|------|
-| `prisIragent_ime/` | Windows TSF/IMM 外壳 + `prisir_tsfsvc`（含开放 API） |
-| `prisir_ime/` | **目录联接** → `D:\Projects\lingxi-android\prisir_ime`（三端同源引擎） |
-| `voice_input/` | 灵犀语音源码（PyInstaller → `lingxi_voice.exe`） |
-| `installer/` | 构建脚本；`stage/` **联接** → oi_enhancements 侧资源（词库/语音，约 10GB） |
-| ~~`fcitx5-prisir/`~~ | 已迁至 `D:\Projects\lingxi-linux` |
+| `prisIragent_ime/` | Windows TSF 外壳与服务（含开放 API） |
+| `prisir_ime/` | 同源 Rust 引擎 |
+| `voice_input/` | 可选语音听写组件 |
+| `installer/` | 安装包构建脚本与舞台资源 |
 
-## 打 Windows 安装包
+## 安装
 
-```bash
-cd /d/Projects/lingxi-windows
-bash installer/build_release.sh --bump beta.30
+从官网下载最新 Setup 安装包，按向导完成；在 Windows「语言 → 中文 → 选项 → 键盘」中启用灵犀。
+
+开发者打安装包可参考 `installer/` 目录内脚本说明。
+
+## 开放 API（可选）
+
+面向「用 AI 帮助用户定制个性化输入法」：本机 Agent 可查询状态、调整配置、访问词库相关能力。
+
+```text
+prisir_tsfsvc --open-api-config enable    # 需要时开启
+prisir_tsfsvc --open-api-config disable   # 关闭
+prisir_tsfsvc --about openapi             # 说明
 ```
 
-## 开放 API
+默认关闭；仅本机回环，不外发数据。
 
-用途：供本机 **AI Agent** 接入，协助用户定制个性化输入法（默认关闭，仅 `127.0.0.1`）。
+## 相关链接
 
-```bash
-prisir_tsfsvc --open-api-config enable   # 需要 Agent 接入时开启
-prisir_tsfsvc --about openapi            # 说明文案
-prisir_tsfsvc --open-api                 # 前台冒烟
-```
+- 官网介绍与安装包：https://www.babelspan.com/prisir-ime.html
+- Android 仓：https://github.com/63894696/lingxi-android
+- Linux 仓：https://github.com/63894696/lingxi-linux
+- 问题反馈：https://bbs.babelspan.com/forum.html#board=browser/ime&hint=prisirai
 
-配置：`%LOCALAPPDATA%\Prisir\IME\open_api.json`
-
-## Linux (fcitx5) 功能补齐评估（2026-11-20）
-
-结论：**值得做，且性价比高** — 核心输入能力并不落后，落后的是「产品壳」。
-
-### 已具备（源码 `fcitx5-prisir`，~500 行 C++）
-- 同源引擎 dlopen：`query / learn / classify / punct / sentences / to_script`
-- P0 中英判定 + 智能标点；P1 整句候选；P2 简繁（Ctrl+Shift+F）
-- Shift 临时英文；候选翻页；学习上屏
-
-### 相对 Win/Android 缺口
-| 缺口 | 难度 | 说明 |
-|------|------|------|
-| 词库管理 / 黑白名单 UI | 中 | 引擎 FFI 已有，缺 GTK/Qt 或配置面板 |
-| 开放 API | 低 | 与 Win 同契约，daemon 起 127.0.0.1 |
-| 九宫格 / 手写 | 高 | 手写模型分发受限；九宫格可接引擎 T9 |
-| 设置页视觉对齐 | 中 | 新 Android 卡片风可做简易配置页 |
-| 打包 `.deb` 升版 | 低 | 换新 `libprisir_ime.so` + 词库即可 |
-
-### 建议路线（约 1–2 周可交付「可用升级」）
-1. **P0（1–2 天）**：用当前 `prisir_ime` 重编 `.so` + 新词库打 `.deb`，跑 `smoke_matrix` Linux 侧
-2. **P1（3–5 天）**：补开放 API + 简繁二态与 Android 对齐 + 基础配置（候选数/模糊音）
-3. **P2（按需）**：词库窗；手写默认不做
-
-引擎层几乎零改；工作量在外壳与打包验证。本机若无 Linux 构建机，可用 WSL2 或现有 VPS。
+版权所有 © 2026 BabelSpan。
