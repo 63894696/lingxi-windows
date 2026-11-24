@@ -3,7 +3,7 @@
 本地中文拼音输入法（Windows TSF）。与 [Android](https://github.com/63894696/lingxi-android)、[Linux](https://github.com/63894696/lingxi-linux) 共用同一套 Rust 引擎，候选、整句与词库学习行为一致。
 
 **官网下载**：https://www.babelspan.com/prisir-ime.html  
-**许可证**：Apache License 2.0
+**许可证**：GNU AGPL-3.0-or-later（见 [LICENSE](LICENSE)）
 
 ## 功能概览
 
@@ -57,3 +57,12 @@ prisir_tsfsvc --about openapi             # 说明
 - 问题反馈：https://bbs.babelspan.com/forum.html#board=browser/ime&hint=prisirai
 
 版权所有 © 2026 BabelSpan。
+
+## License
+
+**GNU Affero General Public License v3.0 or later** — see [LICENSE](LICENSE).
+
+Attribution is required, and derivative works must remain open source, including
+when the software is only offered as a network service (AGPL §13). What is
+covered, what keeps its own license, and the commercial-exception path are
+described in [LICENSING.md](LICENSING.md).

@@ -8,7 +8,7 @@
 
 官网与下载：https://www.babelspan.com/
 
-版权所有 ? 2026 BabelSpan。本软件依据 Apache License, Version 2.0 授权，按「原样」提供，不附带任何担保或条件。完整授权见安装目录 LICENSE.txt（Apache License 2.0）。
+版权所有 ? 2026 BabelSpan。本软件依据 GNU Affero General Public License v3.0 or later（AGPL-3.0-or-later）授权，按「原样」提供，不附带任何担保或条件。完整授权见安装目录 LICENSE.txt（AGPL-3.0-or-later）。
 
 ## 隐私政策
 
@@ -31,7 +31,7 @@
 - 词库与学习数据归用户本地管理；卸载前请自行备份需要保留的用户词典。
 - 软件可能通过官网发布更新；是否安装更新由用户决定。
 
-完整法律文本以安装目录 LICENSE.txt（Apache License, Version 2.0）为准。官网：https://www.babelspan.com/
+完整法律文本以安装目录 LICENSE.txt（GNU Affero General Public License v3.0 or later）为准。官网：https://www.babelspan.com/
 
 ## 开放 API
 
