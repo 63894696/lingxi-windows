@@ -11,7 +11,7 @@
 #   bash installer/build_release.sh --no-nsis       # 只到 stage + 校验（快速回归）
 #   bash installer/build_release.sh --skip-build    # 复用已编译产物，只重打包
 #
-# 版本号单一来源: prisIragent_ime/VERSION.txt (PRIMARY_VERSION)
+# 版本号单一来源: prisiragent_ime/VERSION.txt (PRIMARY_VERSION)
 #
 # 为什么每一步都要断言（都咬过一次）:
 #   1) crate 改名后产物不再是 prisir_ime_tsf.dll → 曾把 9 月的旧 DLL 打进 beta.21 之前的包
@@ -21,11 +21,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENGINE_DIR="${LINGXIME_ENGINE_DIR:-${ROOT}/prisir_ime}"
-SHELL_DIR="${ROOT}/prisIragent_ime"
-# STAGE 默认是 installer/stage(可能是 junction)。部分沙箱/IDE 环境禁止经 junction 穿越,
-# 此时用 LINGXIME_STAGE 指定真实目录(如 C:/Users/<user>/oi_enhancements/installer/stage)。
-STAGE="${LINGXIME_STAGE:-${ROOT}/installer/stage}"
+ENGINE_DIR="${ROOT}/prisir_ime"
+SHELL_DIR="${ROOT}/prisiragent_ime"
+STAGE="${ROOT}/installer/stage"
 VERSION_FILE="${SHELL_DIR}/VERSION.txt"
 NSI="${ROOT}/installer/lingxi_ime.nsi"
 CHECK="${ROOT}/installer/check_release.py"
@@ -48,10 +46,6 @@ done
 
 say() { printf '\n=== %s ===\n' "$*"; }
 die() { echo "[x] $*" >&2; exit 1; }
-# Git Bash → Windows Python：把 /d/foo 转成 D:\foo，避免变成 D:\d\foo
-winpath() { cygpath -w "$1"; }
-# 调 Windows Python 时临时关掉路径自动转换
-pyw() { MSYS_NO_PATHCONV=1 python "$@"; }
 
 # ── 0) 工具链 ────────────────────────────────────────────────────────────────
 say "0/6 工具链"
@@ -67,9 +61,11 @@ cmd //c "$(cygpath -w "${CARGO_BAT}")" --where-link >/dev/null \
 
 # ── 1) 版本号 ────────────────────────────────────────────────────────────────
 say "1/6 版本号"
+# Windows Python 吃盘符路径；Git Bash 的 /d/... 会被错译成 D:\d\...（与下方 py_win 同因）
+py_win() { python "$(cygpath -w "$1")" "${@:2}"; }
 if [[ -n "${BUMP}" ]]; then
   # --bump 支持两种写法：完整 semver（1.0.0-beta.25）或只给后缀（beta.25，沿用现有 MAJOR.MINOR.PATCH）
-  pyw "$(winpath "${ROOT}/installer/set_version.py")" "$(winpath "${VERSION_FILE}")" "${BUMP}"
+  py_win "${ROOT}/installer/set_version.py" "$(cygpath -w "${VERSION_FILE}")" "${BUMP}"
 fi
 VERSION="$(grep -E '^PRIMARY_VERSION=' "${VERSION_FILE}" | cut -d= -f2)"
 CHANNEL="$(grep -E '^RELEASE_CHANNEL=' "${VERSION_FILE}" | cut -d= -f2)"
@@ -94,7 +90,7 @@ ENGINE_DLL="${ENGINE_DIR}/target/release/prisir_ime.dll"
 
 # ── 3) TSF/IMM32 外壳 ────────────────────────────────────────────────────────
 if [[ ${SKIP_BUILD} -eq 0 ]]; then
-  say "3/6 编译外壳 prisIragent_ime（lib + tsfsvc + hw）"
+  say "3/6 编译外壳 prisiragent_ime（lib + tsfsvc + hw）"
   build_crate "${SHELL_DIR}"
   build_crate "${SHELL_DIR}" --bin prisir_tsfsvc
   build_crate "${SHELL_DIR}" --bin prisir_hw --features hw
@@ -109,12 +105,21 @@ for f in "${SHELL_DLL}" "${SVC}" "${HW}"; do
 done
 
 # 产物新鲜度：不允许打进 24 小时前的旧文件（这条正是"打旧包"事故的根因）
+# 另外：产物 mtime 必须不早于关键源文件（防 cargo 桥静默未重编却仍 exit 0）
 if [[ ${SKIP_BUILD} -eq 0 ]]; then
   now=$(date +%s)
   for f in "${ENGINE_DLL}" "${SHELL_DLL}" "${SVC}"; do
     age=$(( now - $(stat -c %Y "$f") ))
     (( age < 86400 )) || die "产物超过 24h，疑似旧文件: $f"
   done
+  about_src="${SHELL_DIR}/src/about.rs"
+  [[ -f "${about_src}" ]] || die "缺 ${about_src}"
+  if [[ "$(stat -c %Y "${SHELL_DLL}")" -lt "$(stat -c %Y "${about_src}")" ]]; then
+    die "外壳 DLL 比 about.rs 旧 — cargo 未真正重编（检查 _cargo_release.bat）"
+  fi
+  # 文案断言：新包必须带 AGPL + 新菜单标题，不得残留旧口语栏
+  py_win "${ROOT}/installer/check_about_strings.py" "$(cygpath -w "${SHELL_DLL}")" \
+    || die "外壳 DLL 文案断言失败（未打进 AGPL/新关于文案）"
 fi
 
 # ── 4) stage 组装 ────────────────────────────────────────────────────────────
@@ -126,6 +131,13 @@ cp -f "${ENGINE_DLL}" "${STAGE}/prisir_ime.dll"
 cp -f "${SVC}" "${STAGE}/prisir_tsfsvc.exe"
 cp -f "${HW}" "${STAGE}/prisir_hw.exe"
 cp -f "${VERSION_FILE}" "${STAGE}/VERSION.txt"
+# 协议：始终从 installer/LICENSE.txt 同步进 stage（NSIS 协议页读这份）
+cp -f "${ROOT}/installer/LICENSE.txt" "${STAGE}/LICENSE.txt"
+[[ -f "${STAGE}/ABOUT.md" ]] || die "缺 stage/ABOUT.md（安装后可读的关于全文）"
+# 官方 AGPL 全文写的是 "GNU AFFERO GENERAL PUBLIC LICENSE"，通常不含字面量 "AGPL-3.0"
+grep -qi "GNU AFFERO GENERAL PUBLIC LICENSE" "${STAGE}/LICENSE.txt" \
+  || die "stage/LICENSE.txt 不是 AGPL（缺 GNU AFFERO GENERAL PUBLIC LICENSE）"
+grep -q "AGPL-3.0" "${STAGE}/ABOUT.md" || die "stage/ABOUT.md 未声明 AGPL-3.0"
 
 # Python 前端（外挂/诊断用，历史遗留）——源在 LINGXIME_PY_SRC
 if [[ -d "${PY_SRC}" ]]; then
@@ -139,10 +151,11 @@ fi
 # 缺了就装出一个"没词库的输入法"，必须硬失败。
 DB="${STAGE}/models/ciku.db"
 [[ -f "${DB}" ]] || die "词库缺失: ${DB}（从备份 .bak_* 恢复或跑 lexicon_pipeline）"
-pyw - "$(winpath "${DB}")" <<'PY'
-import sqlite3, sys, os
-p = os.path.abspath(sys.argv[1])
-c = sqlite3.connect(f'file:{p.replace(chr(92), "/")}?mode=ro', uri=True)
+# Git Bash 下 ${DB} 是 /d/...；Windows Python sqlite URI 要盘符路径，否则 unable to open database file
+DB_WIN="$(cygpath -w "${DB}")"
+python - "${DB_WIN}" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(f'file:{sys.argv[1]}?mode=ro', uri=True)
 n = c.execute('select count(*) from phrase').fetchone()[0]
 t = {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
 assert n > 1_000_000, f'phrase 只有 {n} 行，词库不完整'
@@ -151,20 +164,19 @@ print(f'[db] phrase={n:,} 表齐全')
 PY
 
 # 词库索引（幂等）：反向混拼慢查询依赖 substr(key,-3) 表达式索引，缺了不会错，只是慢
-pyw "$(winpath "${ROOT}/installer/db_indexes.py")" --db "$(winpath "${DB}")"
+py_win "${ROOT}/installer/db_indexes.py" --db "${DB_WIN}"
 
 # ── 5) 校验（stage 一致性 + 导出表） ─────────────────────────────────────────
 say "5/6 校验"
-pyw "$(winpath "${CHECK}")" exports "$(winpath "${STAGE}/prisir_ime.dll")"
-pyw "$(winpath "${CHECK}")" exports "$(winpath "${STAGE}/prisir_ime_tsf.dll")"
+STAGE_WIN="$(cygpath -w "${STAGE}")"
+py_win "${CHECK}" exports "${STAGE_WIN}\\prisir_ime.dll"
+py_win "${CHECK}" exports "${STAGE_WIN}\\prisir_ime_tsf.dll"
 # 若将来恢复 IMM 分包（SearchApp 需要），把产物放到 stage/prisir_ime_imm.ime 后开这行：
-# pyw "$(winpath "${CHECK}")" exports "$(winpath "${STAGE}/prisir_ime_imm.ime")" --require-imm
-pyw "$(winpath "${CHECK}")" stage "$(winpath "${STAGE}")" \
-  --binary "prisir_ime.dll=$(cygpath -w "${ENGINE_DIR}/target/release/prisir_ime.dll")"
+# py_win "${CHECK}" exports "${STAGE_WIN}\\prisir_ime_imm.ime" --require-imm
+py_win "${CHECK}" stage "${STAGE_WIN}"
 
 # 三端冒烟矩阵（同一份用例 Windows/Linux/Android 共用）：引擎行为回归的最后一道闸
-pyw "$(winpath "${ROOT}/installer/smoke_matrix.py")" --lib "$(winpath "${STAGE}/prisir_ime.dll")" --db "$(winpath "${DB}")" \
-  --cases "$(winpath "${ENGINE_DIR}/abi_cases.json")" \
+py_win "${ROOT}/installer/smoke_matrix.py" --lib "${STAGE_WIN}\\prisir_ime.dll" --db "${DB_WIN}" \
   || die "ABI 冒烟矩阵未通过（引擎行为回归，别打包）"
 
 # ── 6) NSIS ─────────────────────────────────────────────────────────────────
@@ -177,12 +189,13 @@ OUT="LingxiIME-Windows-x64-${VERSION}-${CHANNEL}-Setup.exe"
 # MSYS_NO_PATHCONV=1：否则 Git Bash 把 /DVERSION=... 当路径转成 C:/Program Files/Git/DVERSION
 # 但关掉转换后，nsi 路径必须显式转成 Windows 形式，否则 makensis 把 /c/... 当成选项 → 打 Usage
 NSI_WIN="$(cygpath -w "${NSI}")"
-# SRC 必须用 Windows 绝对路径:NSI 里的 File "${SRC}\..." 在 makensis 当前目录下按相对路径解析,
-# 经 junction 会被部分环境拒绝。
-STAGE_WIN="$(cygpath -w "${STAGE}")"
-( cd "${ROOT}/installer" && MSYS_NO_PATHCONV=1 "${MAKENSIS}" /DVERSION="${VERSION}" /DCHANNEL="${CHANNEL}" /DSRC="${STAGE_WIN}" "${NSI_WIN}" ) \
+( cd "${ROOT}/installer" && MSYS_NO_PATHCONV=1 "${MAKENSIS}" /DVERSION="${VERSION}" /DCHANNEL="${CHANNEL}" "${NSI_WIN}" ) \
   | tail -14
 [[ -f "${ROOT}/installer/${OUT}" ]] || die "NSIS 未产出 ${OUT}"
-pyw "$(winpath "${CHECK}")" exe "$(winpath "${ROOT}/installer/${OUT}")"
+py_win "${CHECK}" exe "$(cygpath -w "${ROOT}/installer/${OUT}")"
+# 同步一份到 dist/，方便对外交付
+mkdir -p "${ROOT}/dist"
+cp -f "${ROOT}/installer/${OUT}" "${ROOT}/dist/${OUT}"
 say "完成"
 echo "安装包: installer/${OUT}  (${VERSION})"
+echo "副本:   dist/${OUT}"

@@ -16,7 +16,7 @@ WITH_RUST="${WITH_RUST:-1}"        # 第一次装 = 1,本机已有 rust 可设 0
 WITH_INDEX="${WITH_INDEX:-0}"      # 默认不自动建索引(用户首次开探囊时再触发)
 SKIP_DEPS="${SKIP_DEPS:-0}"        # 跳过 apt install(完全离线环境用)
 SKIP_FIREJAIL="${SKIP_FIREJAIL:-1}" # electron 跑 firejail 沙箱(默认关,sandbox 已在 electron 层)
-ACCEPT_LICENSE="${ACCEPT_LICENSE:-0}" # 默认要求用户在终端确认 Apache-2.0
+ACCEPT_LICENSE="${ACCEPT_LICENSE:-0}" # 默认要求用户在终端确认 OIE-PCS-1.0
 
 echo "=== PrisirAI Linux 安装 ==="
 echo "INSTALL_DIR     = $INSTALL_DIR"
@@ -24,7 +24,7 @@ echo "WITH_RUST       = $WITH_RUST"
 echo "WITH_INDEX      = $WITH_INDEX"
 echo "ACCEPT_LICENSE  = $ACCEPT_LICENSE (1=跳过终端确认)"
 
-# ---------- 0. 协议确认 (Apache License 2.0) ----------
+# ---------- 0. 协议确认 (OIE-PCS-1.0) ----------
 # Win 端 NSIS 通过 MUI_PAGE_LICENSE 弹 EULA 页;Linux 端在终端里展示摘要,
 # 链接到 LICENSE 全文。ACCEPT_LICENSE=1 用于 CI/无人值守/容器场景。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,31 +33,35 @@ LICENSE_FILE="$SCRIPT_DIR/LICENSE.txt"
 if [[ "$ACCEPT_LICENSE" != "1" ]]; then
     echo ""
     echo "================================================================"
-    echo "  Apache License, Version 2.0 — Installation Notice"
+    echo "  OI Enhancements Personal and Commercial Source License v1.0"
+    echo "  (OIE-PCS-1.0) — Installation Notice"
     echo "================================================================"
     if [[ -f "$LICENSE_FILE" ]]; then
-        # 展示 LICENSE.txt;非交互式TTY下 cat 全文即可
+        # 展示 LICENSE.txt(摘要 + 双语);非交互式TTY下 cat 全文即可
         cat "$LICENSE_FILE"
     else
         echo "WARN: 找不到 $LICENSE_FILE,只显示简短摘要。"
         echo ""
-        echo "SPDX-License-Identifier: Apache-2.0"
+        echo "SPDX-License-Identifier: LicenseRef-OI-Enhancements-PCS-1.0"
         echo ""
-        echo "1. 本软件依据 Apache License, Version 2.0 授权。"
-        echo "2. 可按该许可自由使用、修改与分发；须保留版权与许可声明。"
-        echo "3. 软件按「原样」提供，不附带任何明示或暗示担保。"
-        echo "4. 完整条款见 Apache License 2.0 原文。"
+        echo "1. 个人非商业使用需遵守 OIE-PCS-1.0。"
+        echo "2. 商业使用需另行取得商业许可(COMMERCIAL-LICENSE.md)。"
+        echo "3. 修改 Core Components(CORE-COMPONENTS.md 列出的路径)且"
+        echo "   分发 / 作为网络服务时,必须按 OIE-PCS-1.0 公开。"
+        echo "4. 品牌商标(Prisir AI / prisiragent / 火焰标识 / assets/ 图标)"
+        echo "   不通过 OIE-PCS-1.0 授权,商业使用需品牌许可。"
+        echo "5. 适用法律:香港特别行政区法律;争议由 HKIAC 仲裁。"
     fi
     echo ""
     echo "完整许可文本:"
     echo "  $LICENSE_FILE"
-    echo "  https://www.apache.org/licenses/LICENSE-2.0"
+    echo "  https://github.com/63894696/oi_enhancements/blob/master/LICENSE"
     echo "================================================================"
     if [[ -t 0 ]]; then
         # 交互式TTY:要求输入 yes
-        read -r -p "接受 Apache License 2.0 条款并继续安装? [yes/no]: " reply
+        read -r -p "接受 OIE-PCS-1.0 条款并继续安装? [yes/no]: " reply
         case "$reply" in
-            yes|y|Y|Yes|YES) echo "  已接受 Apache License 2.0,继续..." ;;
+            yes|y|Y|Yes|YES) echo "  已接受 OIE-PCS-1.0,继续..." ;;
             *) echo "ERR: 未接受协议,退出安装。" >&2; exit 1 ;;
         esac
     else

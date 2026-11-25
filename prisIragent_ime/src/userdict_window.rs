@@ -92,11 +92,10 @@ const IDC_M_BTN_SAVE: u16 = 2013;    // 保存(加/改)
 const IDC_M_BTN_DEL: u16 = 2014;     // 删除词条
 const IDC_BTN_PREV: u16 = 2015;      // 上一页
 const IDC_BTN_NEXT: u16 = 2016;      // 下一页
-// 黑/白名单(2026-11-17):引擎侧 6 个导出早就有了,一直没接 UI。
-// 「屏蔽」= 黑名单(候选里彻底不出现) / 「置顶」= 白名单(+10M 权重) / 「解除」= 两者都移除。
-const IDC_M_BTN_BLOCK: u16 = 2017;
-const IDC_M_BTN_PIN: u16 = 2018;
-const IDC_M_BTN_UNMARK: u16 = 2019;
+// 已删(2026-11-25 用户拍板):屏蔽/置顶/解除 三个按钮。
+//   理由:用户词层已经能在同一列表里看见并直接删 —— 删掉即彻底消失,
+//   「屏蔽」只是把词藏起来(还占着学习记录)、「置顶」是加权,都属于绕路。
+//   保留引擎侧黑白名单导出(旧库里的名单仍然生效),只是不再从本窗口提供入口。
 const PAGE_SIZE: usize = 20;         // 每页条数(灵犀式分页)
 // 已删(2026-09-04 用户拍板,与编辑行重复):IDC_EDIT_WORD/IDC_EDIT_PINYIN/IDC_BTN_ADD(底部加词)、
 //   IDC_BTN_CLEAR(清空学习)、IDC_BTN_REFRESH(刷新)、IDC_BTN_DEL(删除选中)。
@@ -122,10 +121,9 @@ struct MainRow {
     value: String,
     weight: i64,
     source: String,
-    /// 在黑名单里(候选永不出现)
-    blocked: bool,
-    /// 在白名单里(候选加权置顶)
-    pinned: bool,
+    /// 来自**用户词层**(学习词/手造词)。2026-11-25:这类行必须能在同一张列表里
+    /// 被看见并删除,否则用户看着候选里的垃圾词却找不到它(实测正是这个投诉)。
+    from_user: bool,
 }
 
 struct UserDictState {
@@ -141,13 +139,6 @@ struct UserDictState {
     search_term: String,       // 当前搜索词(分页/保存后重搜共用)
     page: usize,               // 当前页(0 起)
     total: usize,              // 匹配总条数(「共 N 条」)
-    /// 黑/白名单词集合(每次 reload 从引擎读,用于给行打标记 + 底部计数)
-    black: Vec<String>,
-    white: Vec<String>,
-    /// 用户词(自加词/学成词)。只读安装下"保存主库词条"会落到这里(置顶)。
-    mine: Vec<String>,
-    /// 一行操作反馈(底部状态行右侧显示,下一次操作覆盖)
-    hint: String,
 }
 
 impl UserDictState {
@@ -156,7 +147,6 @@ impl UserDictState {
             hwnd: None, rows: Vec::new(), sel: None, scroll: 0, visible: false,
             tab: Tab::All, main_rows: Vec::new(), main_scroll: 0, main_sel: None,
             search_term: String::new(), page: 0, total: 0,
-            black: Vec::new(), white: Vec::new(), mine: Vec::new(), hint: String::new(),
         }
     }
 }
@@ -212,41 +202,21 @@ fn reload_main_page() {
                     value: v["value"].as_str().unwrap_or("").to_string(),
                     weight: v["weight"].as_i64().unwrap_or(0),
                     source: v["source"].as_str().unwrap_or("").to_string(),
-                    blocked: false, // 下面按黑/白名单集合回填
-                    pinned: false,
+                    from_user: false,
                 })
                 .collect()
         })
         .unwrap_or_default();
-    // 黑/白名单:一次读全量(名单通常几十~几百条),给本页行打标记 + 底部计数。
-    let parse_list = |is_black: bool| -> Vec<String> {
-        crate::ffi::list_json(is_black)
-            .and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(&j).ok())
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| v["value"].as_str().or_else(|| v["word"].as_str()).unwrap_or("").to_string())
-                    .filter(|x| !x.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let black = parse_list(true);
-    let white = parse_list(false);
-    // 用户词(自加/学成):只读安装下"保存主库词条"就是写进这张表 —— 也要标出来,
-    // 否则用户点了保存、权重没变,会以为没生效。
-    let mine: Vec<String> = crate::ffi::user_dict_list_json()
-        .and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(&j).ok())
-        .map(|arr| {
-            arr.iter()
-                .map(|v| v["value"].as_str().unwrap_or("").to_string())
-                .filter(|x| !x.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
     let mut rows = rows;
-    for r in rows.iter_mut() {
-        r.blocked = black.iter().any(|b| b == &r.value);
-        r.pinned = white.iter().any(|w| w == &r.value) || mine.iter().any(|m| m == &r.value);
+    // 用户词层(学习词/手造词)前置(2026-11-25)。
+    //
+    // 为什么必须合进同一张列表:用户看到的垃圾候选(如 `yakebicx` 第 2 位
+    // 「有啊可比出现」)就住在这张表里,而原来的搜索页**只搜主库** ——
+    // 用户拿同样的字母怎么搜都搜不到,自然无法删除。这是「用户无法清理词库」的根因。
+    rows = merge_user_rows(rows, &term, crate::ffi::user_dict_search_json(&term, 20));
+    // 用户词只挂第 0 页:翻页时重复出现同一批「[学]」行会让人以为搜到了别的东西。
+    if page > 0 {
+        rows.retain(|r| !r.from_user);
     }
     let st = global_state();
     let g = st.lock().unwrap();
@@ -255,9 +225,45 @@ fn reload_main_page() {
     s.total = total;
     s.main_scroll = 0;
     s.main_sel = None;
-    s.black = black;
-    s.white = white;
-    s.mine = mine;
+}
+
+/// 把「用户词层」搜索结果合进主库结果列表(纯函数,便于单测)。
+///
+/// 规则(2026-11-25 修「用户无法清理词库」):
+///   - 只在 `term` 非空时合并:空搜索是「全库浏览」,把几千条学习词塞进去会打乱分页。
+///   - 用户行前置(它们是「候选里为什么会多出这个词」的直接解释)。
+///   - 只去掉与主库**同码同词**的重复;同词不同码必须保留,否则用户删不到这条学习记录。
+///   - `json` 为 None/解析失败 → 原样返回(旧引擎 DLL 没有 user_search 时不破坏列表)。
+fn merge_user_rows(
+    rows: Vec<MainRow>,
+    term: &str,
+    json: Option<String>,
+) -> Vec<MainRow> {
+    if term.trim().is_empty() {
+        return rows;
+    }
+    let Some(j) = json else { return rows; };
+    let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&j) else {
+        return rows;
+    };
+    let mut user_rows: Vec<MainRow> = arr
+        .iter()
+        .map(|v| MainRow {
+            key: v["key"].as_str().unwrap_or("").to_string(),
+            value: v["value"].as_str().unwrap_or("").to_string(),
+            weight: v["weight"].as_i64().unwrap_or(0),
+            source: "user".to_string(),
+            from_user: true,
+        })
+        .filter(|u| !u.value.is_empty())
+        .collect();
+    user_rows.retain(|u| {
+        !rows
+            .iter()
+            .any(|r| !r.from_user && r.value == u.value && r.key == u.key)
+    });
+    user_rows.extend(rows);
+    user_rows
 }
 
 /// 新搜索(词变了):重置到第 0 页再拉。
@@ -350,16 +356,11 @@ fn create_children(hwnd: HWND) {
     // 翻页(灵犀式)。
     mk_btn(IDC_BTN_PREV, "< 上一页");
     mk_btn(IDC_BTN_NEXT, "下一页 >");
-    // 黑/白名单(作用于选中行或编辑框里的词)。
-    mk_btn(IDC_M_BTN_BLOCK, "屏蔽");
-    mk_btn(IDC_M_BTN_PIN, "置顶");
-    mk_btn(IDC_M_BTN_UNMARK, "解除");
     // 子控件统一字体(与自绘/候选窗一致,否则 EDIT/BUTTON 用系统默认字体看着不齐)。
     let ui_font = cached_font(false);
     if !ui_font.is_invalid() {
         for id in [IDC_EDIT_SEARCH, IDC_M_EDIT_WORD, IDC_M_EDIT_PINYIN, IDC_M_EDIT_WEIGHT,
-                   IDC_BTN_SEARCH, IDC_M_BTN_SAVE, IDC_M_BTN_DEL, IDC_BTN_PREV, IDC_BTN_NEXT,
-                   IDC_M_BTN_BLOCK, IDC_M_BTN_PIN, IDC_M_BTN_UNMARK] {
+                   IDC_BTN_SEARCH, IDC_M_BTN_SAVE, IDC_M_BTN_DEL, IDC_BTN_PREV, IDC_BTN_NEXT] {
             if let Ok(c) = unsafe { GetDlgItem(hwnd, id as i32) } {
                 if !c.0.is_null() {
                     unsafe { SendMessageW(c, WM_SETFONT, WPARAM(ui_font.0 as usize), LPARAM(1)); }
@@ -431,12 +432,9 @@ fn layout_children(hwnd: HWND) {
     let btn_w = ((remain - 6) / 2).max(56);
     set(IDC_M_BTN_SAVE, ex, EDIT_TOP, btn_w, EDIT_H); ex += btn_w + 6;
     set(IDC_M_BTN_DEL, ex, EDIT_TOP, btn_w, EDIT_H);
-    // ③ 底部:翻页 + 黑白名单操作(页码·总数文字在右侧,见 paint)。
+    // ③ 底部:翻页(页码·总数文字在右侧,见 paint)。
     set(IDC_BTN_PREV, MARGIN, oy, 84, 26);
     set(IDC_BTN_NEXT, MARGIN + 92, oy, 84, 26);
-    set(IDC_M_BTN_BLOCK, MARGIN + 184, oy, 64, 26);
-    set(IDC_M_BTN_PIN, MARGIN + 256, oy, 64, 26);
-    set(IDC_M_BTN_UNMARK, MARGIN + 328, oy, 64, 26);
 }
 
 /// 按当前 tab 的行数/可视行设置滚动条范围。
@@ -558,6 +556,43 @@ pub(crate) fn destroy() {
     hide_impl();
 }
 
+/// 独立进程打开词库管理窗口(自带消息循环)。
+///
+/// 用途:用户要清理被误学的词时,不必先让输入法在某程序里激活 ——
+/// 直接跑 `prisir_tsfsvc --user-dict` 就能开窗搜索(关键字命中拼音或词)
+/// 并删除「[学]」行。窗口关闭即退出进程。
+pub fn run_standalone() -> i32 {
+    toggle();
+    let hwnd = {
+        let st = global_state();
+        let g = st.lock().unwrap();
+        let h = g.borrow().hwnd;
+        h
+    };
+    let Some(hwnd) = hwnd else { return 1; };
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, IsWindow, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+        };
+        let mut msg = MSG::default();
+        loop {
+            let mut got = false;
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                got = true;
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if !IsWindow(hwnd).as_bool() {
+                break;
+            }
+            if !got {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+    0
+}
+
 // ── 操作 ────────────────────────────────────────────────────────────────────
 fn get_edit_text(hwnd: HWND, id: u16) -> String {
     let ctl = unsafe { GetDlgItem(hwnd, id as i32) };
@@ -667,19 +702,39 @@ fn on_main_save(hwnd: HWND) {
     }
 }
 
-/// 主库删除选中词条(确认后删,再重搜刷新)。
+/// 删除选中词条:用户词层行删学习/手造记录,主库行删主库(确认后删,再重搜刷新)。
 fn on_main_delete(hwnd: HWND) {
     let sel = global_state().lock().unwrap().borrow().main_sel;
     let Some(idx) = sel else { return; };
-    let (key, value) = {
+    let (key, value, from_user) = {
         let st = global_state();
         let g = st.lock().unwrap();
         let s = g.borrow();
         match s.main_rows.get(idx) {
-            Some(r) => (r.key.clone(), r.value.clone()),
+            Some(r) => (r.key.clone(), r.value.clone(), r.from_user),
             None => return,
         }
     };
+    if from_user {
+        // 用户词层(学习/手造):这才是用户真正想清掉的那类。
+        // 按**词本身**删(不要求记得当初的输入串),一次清掉该词所有编码行。
+        let cap: Vec<u16> = "删除学习词".encode_utf16().chain(std::iter::once(0)).collect();
+        let msg = format!("从用户词库删除「{}」({})?\n\n该词是学习/手造记录,删除后不再优先出现在候选里。", value, key);
+        let mut mw: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+        let r = unsafe { MessageBoxW(hwnd, PCWSTR(mw.as_mut_ptr()), PCWSTR(cap.as_ptr()), MB_OKCANCEL | MB_ICONQUESTION) };
+        if r != IDOK { return; }
+        // 新引擎:按词删(清掉该词所有编码行);旧 DLL 无此导出(-1)→ 回退 key+value 精确删。
+        let n = crate::ffi::user_dict_remove_value(&value);
+        if n < 0 {
+            let _ = crate::ffi::user_dict_remove(&key, &value);
+        }
+        // 不给「已删除 XXX」提示:删除结果直接体现在列表上(该行消失),
+        // 再画一行文字会和底部页码/总数重叠(用户实测两种文字叠在一起)。
+        reload_main_page();
+        layout_children(hwnd);
+        unsafe { let _ = InvalidateRect(hwnd, None, true); }
+        return;
+    }
     let cap: Vec<u16> = "删除主库词条".encode_utf16().chain(std::iter::once(0)).collect();
     let msg = format!("确定从主库删除「{}」({})?此操作直接改主库文件。", value, key);
     let mut mw: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
@@ -697,76 +752,6 @@ fn on_main_delete(hwnd: HWND) {
         layout_children(hwnd);
         unsafe { let _ = InvalidateRect(hwnd, None, true); }
     }
-}
-
-/// 黑/白名单动作。
-#[derive(Clone, Copy, PartialEq)]
-enum MarkAction { Block, Pin, Unmark }
-
-/// 当前操作目标:优先选中的主库行,其次编辑框里的「词语」(手打一个词也能直接屏蔽)。
-fn mark_target(hwnd: HWND) -> Option<(String, String)> {
-    let sel_row = {
-        let st = global_state();
-        let g = st.lock().unwrap();
-        let s = g.borrow();
-        s.main_sel.and_then(|i| s.main_rows.get(i).map(|r| (r.key.clone(), r.value.clone())))
-    };
-    if sel_row.is_some() {
-        return sel_row;
-    }
-    let word = get_edit_text(hwnd, IDC_M_EDIT_WORD).trim().to_string();
-    if word.is_empty() {
-        return None;
-    }
-    let pinyin = get_edit_text(hwnd, IDC_M_EDIT_PINYIN).trim().to_string();
-    Some((pinyin, word))
-}
-
-/// 屏蔽 / 置顶 / 解除。改完立即 reload(引擎每次查询都读 db,改完即生效,无需重启输入法)。
-fn on_mark(hwnd: HWND, action: MarkAction) {
-    if !crate::ffi::list_available() {
-        set_hint("当前引擎 DLL 不支持黑白名单(请用新版 prisir_ime.dll)");
-        unsafe { let _ = InvalidateRect(hwnd, None, true); }
-        return;
-    }
-    let Some((_key, word)) = mark_target(hwnd) else {
-        set_hint("先在列表里选一个词(或在上方「词语」框里填词)");
-        unsafe { let _ = InvalidateRect(hwnd, None, true); };
-        return;
-    };
-    let hint = match action {
-        MarkAction::Block => {
-            let ok = crate::ffi::blacklist_add(&word, "用户手动屏蔽");
-            // 黑名单优先级高于白名单:同一个词既屏蔽又置顶时,以屏蔽为准
-            if ok { format!("已屏蔽「{}」", word) } else { format!("屏蔽「{}」失败(可能已在名单里)", word) }
-        }
-        MarkAction::Pin => {
-            // 置顶前先解除屏蔽,否则加了权重也永远不出现
-            let was_blocked = crate::ffi::blacklist_remove(&word) > 0;
-            let ok = crate::ffi::whitelist_add(&word, "用户置顶");
-            match (ok, was_blocked) {
-                (true, true) => format!("已置顶「{}」(同时解除屏蔽)", word),
-                (true, false) => format!("已置顶「{}」", word),
-                (false, _) => format!("置顶「{}」失败(可能已在名单里)", word),
-            }
-        }
-        MarkAction::Unmark => {
-            let b = crate::ffi::blacklist_remove(&word);
-            let w = crate::ffi::whitelist_remove(&word);
-            if b + w > 0 { format!("已解除「{}」(黑{} 白{})", word, b, w) }
-            else { format!("「{}」本来就不在黑白名单里", word) }
-        }
-    };
-    reload_main_page();
-    layout_children(hwnd);
-    set_hint(&hint);
-    unsafe { let _ = InvalidateRect(hwnd, None, true); }
-}
-
-fn set_hint(msg: &str) {
-    let st = global_state();
-    let g = st.lock().unwrap();
-    g.borrow_mut().hint = msg.to_string();
 }
 
 // ── WndProc ─────────────────────────────────────────────────────────────────
@@ -908,9 +893,6 @@ unsafe fn userdict_wnd_proc_inner(
                     IDC_M_BTN_DEL => on_main_delete(hwnd),
                     IDC_BTN_PREV => on_page(hwnd, -1),
                     IDC_BTN_NEXT => on_page(hwnd, 1),
-                    IDC_M_BTN_BLOCK => on_mark(hwnd, MarkAction::Block),
-                    IDC_M_BTN_PIN => on_mark(hwnd, MarkAction::Pin),
-                    IDC_M_BTN_UNMARK => on_mark(hwnd, MarkAction::Unmark),
                     _ => {}
                 }
             }
@@ -942,13 +924,11 @@ fn cached_font(bold: bool) -> HFONT {
 fn paint_window(hwnd: HWND) {
     ulog!("UserDict: paint enter");
     let st = global_state();
-    let (main_rows, main_scroll, main_sel, writable, search_term, page, total,
-         n_black, n_white, n_mine, hint) = {
+    let (main_rows, main_scroll, main_sel, writable, search_term, page, total) = {
         let g = st.lock().unwrap();
         let s = g.borrow();
         (s.main_rows.clone(), s.main_scroll, s.main_sel, crate::ffi::main_dict_writable(),
-         s.search_term.clone(), s.page, s.total, s.black.len(), s.white.len(), s.mine.len(),
-         s.hint.clone())
+         s.search_term.clone(), s.page, s.total)
     };
     ulog!("UserDict: paint state main_rows={} total={} page={} writable={}", main_rows.len(), total, page, writable);
 
@@ -1041,18 +1021,14 @@ fn paint_window(hwnd: HWND) {
                 FillRect(hdc, &sel_rc, sb);
                 let _ = DeleteObject(sb);
             }
-            // 屏蔽=灰字(候选里根本不会出现);置顶=正常色但词前带「顶」标。
-            SetTextColor(hdc, COLORREF(if main_sel == Some(idx) {
+            // 学习/手造词用强调色,主库普通行用正文色。
+            SetTextColor(hdc, COLORREF(if main_sel == Some(idx) || row.from_user {
                 COL_ACCENT
-            } else if row.blocked {
-                COL_SEP.max(0x00808080) // 灰
             } else {
                 COL_TEXT
             }));
-            let word_cell = if row.blocked {
-                format!("[禁] {}", row.value)
-            } else if row.pinned {
-                format!("[顶] {}", row.value)
+            let word_cell = if row.from_user {
+                format!("[学] {}", row.value)
             } else {
                 row.value.clone()
             };
@@ -1081,7 +1057,7 @@ fn paint_window(hwnd: HWND) {
             let msg = if search_term.is_empty() {
                 "词库为空"
             } else {
-                "无匹配结果 — 只支持前缀匹配（词的开头几个字 或 拼音开头）"
+                "无匹配结果 — 主库只支持前缀匹配（词开头几个字 或 拼音开头）；学习词支持任意位置匹配"
             };
             let mut ew: Vec<u16> = wcs(msg);
             let mut erc = RECT { left: list_x, top: list_y + 30, right: list_x + list_w, bottom: list_y + 70 };
@@ -1093,26 +1069,19 @@ fn paint_window(hwnd: HWND) {
         let base = ch - BTN_BAR_H;
         let oy = base + 12;
         let max_page = if total == 0 { 0 } else { (total - 1) / PAGE_SIZE };
-        let mut info = if search_term.is_empty() {
+        let info = if search_term.is_empty() {
             format!("全库共 {} 条 · 第 {}/{} 页", total, page + 1, max_page + 1)
         } else {
             format!("「{}」 共 {} 条 · 第 {}/{} 页", search_term, total, page + 1, max_page + 1)
         };
-        if n_black + n_white + n_mine > 0 {
-            info.push_str(&format!(" · 屏蔽 {} · 置顶 {} · 自加 {}", n_black, n_white, n_mine));
-        }
         let mut iw: Vec<u16> = wcs(&info);
-        // 底部按钮区:上一页/下一页 + 屏蔽/置顶/解除(与 layout 的 x 对齐)
-        let info_x = MARGIN + 328 + 64 + 16;
+        // 底部起始 x = 上一页/下一页 之后(与 layout 的 MARGIN+92+84 对齐)。
+        // 2026-11-25:原来这里还画「已删除 XXX」操作反馈,和页码画在同一个 RECT 上
+        // → 两行字重叠(用户实测)。删除结果本来就体现在列表上(行消失),
+        // 反馈文字已彻底去掉,这一行只留页码·总数。
+        let info_x = MARGIN + 92 + 84 + 16;
         let mut irc = RECT { left: info_x, top: oy, right: cw - MARGIN, bottom: oy + 26 };
         DrawTextW(hdc, &mut iw, &mut irc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        // 操作反馈(右侧,金色强调;下次操作覆盖)
-        if !hint.is_empty() {
-            SetTextColor(hdc, COLORREF(COL_ACCENT));
-            let mut hw: Vec<u16> = wcs(&hint);
-            let mut hrc = RECT { left: info_x, top: oy, right: cw - MARGIN, bottom: oy + 26 };
-            DrawTextW(hdc, &mut hw, &mut hrc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        }
 
         if let Some(of) = old_font {
             SelectObject(hdc, of);
@@ -1120,5 +1089,73 @@ fn paint_window(hwnd: HWND) {
         }
         let _ = EndPaint(hwnd, &ps);
         ulog!("UserDict: paint endpaint done");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn main_row(key: &str, value: &str) -> MainRow {
+        MainRow {
+            key: key.into(),
+            value: value.into(),
+            weight: 100,
+            source: "phrase".into(),
+            from_user: false,
+        }
+    }
+
+    /// 2026-11-25 用户投诉的复现:候选里有垃圾词,但搜索页搜不到 →
+    /// 必须把用户词层合并进搜索结果、【置顶】显示并标 from_user(可删)。
+    #[test]
+    fn user_rows_are_merged_and_marked_deletable() {
+        let json = r#"[
+            {"key":"yakebicx","value":"有啊可比出现","weight":100000},
+            {"key":"limancx","value":"礼貌你出现","weight":100000}
+        ]"#;
+        let merged = merge_user_rows(vec![main_row("yakebicaixiang", "雅可比猜想")], "出现", Some(json.into()));
+        assert_eq!(merged.len(), 3);
+        assert!(merged[0].from_user, "用户行必须前置且带 from_user 标记");
+        assert_eq!(merged[0].value, "有啊可比出现");
+        assert!(!merged[2].from_user, "主库行仍在最后且不是用户行");
+    }
+
+    /// 空搜索是「全库浏览」,不能混入用户词(否则分页语义被打乱)。
+    #[test]
+    fn empty_term_keeps_main_list_only() {
+        let json = r#"[{"key":"a","value":"某词","weight":1}]"#;
+        let merged = merge_user_rows(vec![main_row("k", "主库词")], "  ", Some(json.into()));
+        assert_eq!(merged.len(), 1);
+        assert!(!merged[0].from_user);
+    }
+
+    /// 同词不同码的学习行必须保留 —— 用户要删的正是这条学习记录。
+    #[test]
+    fn same_word_different_key_is_kept() {
+        let json = r#"[{"key":"yakebicx","value":"雅可比猜想","weight":100000}]"#;
+        let merged = merge_user_rows(
+            vec![main_row("yakebicaixiang", "雅可比猜想")],
+            "yakebi",
+            Some(json.into()),
+        );
+        assert_eq!(merged.len(), 2, "同词不同码 = 两条独立可删记录");
+        assert!(merged[0].from_user);
+    }
+
+    /// 同码同词去重,避免同一行出现两次。
+    #[test]
+    fn identical_key_and_word_is_deduped() {
+        let json = r#"[{"key":"k","value":"主库词","weight":1}]"#;
+        let merged = merge_user_rows(vec![main_row("k", "主库词")], "主库", Some(json.into()));
+        assert_eq!(merged.len(), 1);
+        assert!(!merged[0].from_user);
+    }
+
+    /// 引擎缺 user_search 导出(旧 DLL)→ 原样返回,不破坏列表。
+    #[test]
+    fn missing_user_search_keeps_main_rows() {
+        let merged = merge_user_rows(vec![main_row("k", "主库词")], "主库", None);
+        assert_eq!(merged.len(), 1);
     }
 }

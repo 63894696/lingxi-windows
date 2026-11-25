@@ -11,6 +11,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 windows = { version = "0.58", features = [
     "Win32_UI_TextServices",
+    "Win32_Globalization",               # 2026-11-25 plugins.json 按 ANSI 代码页落盘的兜底解码(CP_ACP)
     "Win32_UI_Input_KeyboardAndMouse",  # T25: ITfInputProcessorProfileMgr::ActivateProfile 的 HKL 参数
     "Win32_System_Com",
     "Win32_Foundation",
@@ -20,7 +21,6 @@ windows = { version = "0.58", features = [
     "Win32_UI_Controls",                 # Step2: 词库管理窗口 SetScrollInfo(原生滚动条)
     "Win32_System_Console",     # T4: SetConsoleCtrlHandler for --daemon
     "Win32_Security",           # T4: RegCreateKeyExW 需要 SECURITY_ATTRIBUTES 类型
-    "Win32_Security_Authorization", # ConvertSidToStringSidW(修复 elevated 注册写错 HKCU)
     "Win32_System_StationsAndDesktops",  # T5: WTS注册接口(T6 升级用)
     "Win32_System_RemoteDesktop",        # T5: WTSGetActiveConsoleSessionId 在这里
     "Win32_Graphics_Gdi",                # T10: WNDCLASSEXW + RegisterClassExW (HBRUSH/HICON/HCURSOR 字段需要)
@@ -39,6 +39,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Variant",              # InitVariantFromInt32Array(笔画坐标 SAFEARRAY→VARIANT)
     "Win32_System_Ole",                  # TabletPC CreateStroke 的 VARIANT/SAFEARRAY 支持
     "Win32_Graphics_Imaging",            # 状态栏彩色 emoji: WIC 内存位图承载 D2D,再 BitBlt 贴回 GDI
+    "Win32_Networking_WinHttp",          # 每日活跃信号: WinHttpOpen/WinHttpSendRequest GET updates.json
     "Win32_System_DataExchange",         # 2026-11-20 翻译译文复制: OpenClipboard/SetClipboardData
     "Win32_System_Memory",               # GlobalAlloc/GlobalLock(剪贴板 CF_UNICODETEXT)
     "Win32_System_Environment",          # 诊断包: GetComputerNameW 拿主机名(system_info.txt)

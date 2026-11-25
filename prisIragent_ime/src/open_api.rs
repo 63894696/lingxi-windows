@@ -1,17 +1,14 @@
-//! open_api.rs — 本机开放 API（供 AI Agent 定制个性化输入法）
+//! open_api.rs — 本机开放 API（localhost HTTP 骨架）
 //!
-//! **用途**:让本机 Agent / 脚本接入，按用户习惯协助查询状态、调整配置与词库相关能力。
-//! 默认关闭；需要 Agent 接入时：`prisir_tsfsvc --open-api-config enable`。
-//!
-//! 设计边界:
-//!   - 配置落 `%LOCALAPPDATA%\Prisir\IME\open_api.json`
-//!   - 只绑 `127.0.0.1`（不提供 LAN bind）
+//! 设计（对齐 lx-music Open API，贴合灵犀铁边界）:
+//!   - 默认关闭；配置落 `%LOCALAPPDATA%\Prisir\IME\open_api.json`
+//!   - 只绑 `127.0.0.1`（骨架不提供 LAN bind）
 //!   - HTTP 复用 `ipc::handle_request`（POST /rpc → JSON-RPC）
 //!   - daemon 启动时若 `enabled=true` 自动起监听线程
 //!   - `prisir_tsfsvc --open-api` 可单独前台冒烟（无视 enabled）
 //!
-//! 端点:
-//!   GET  /           → 服务说明（含用途摘要）
+//! 端点（骨架）:
+//!   GET  /           → 服务说明
 //!   GET  /health     → {"ok":true,...}
 //!   GET  /status     → 注册状态 + open_api 配置快照
 //!   POST /rpc        → body = 一行 JSON-RPC（同 stdio ipc）
@@ -292,8 +289,6 @@ fn route(method: &str, path: &str, body: String) -> (u16, &'static str, String) 
             json!({
                 "service": "prisir-ime-open-api",
                 "version": env!("CARGO_PKG_VERSION"),
-                "purpose": "Local Open API for AI agents to help customize a personalized IME on this machine. Default off; enable with: prisir_tsfsvc --open-api-config enable",
-                "purpose_zh": "供本机 AI Agent 定制个性化输入法；默认关闭；开启：prisir_tsfsvc --open-api-config enable",
                 "endpoints": ["GET /health", "GET /status", "POST /rpc"],
                 "bind": "127.0.0.1 only",
                 "docs": "POST /rpc with JSON-RPC body (methods: version/status/register/unregister/enable/disable/query/open_api.get/open_api.set)",
@@ -389,18 +384,74 @@ pub fn rpc_set(params: &serde_json::Value) -> Result<serde_json::Value, String> 
     }
     // bind 骨架固定 127.0.0.1
     cfg.bind = DEFAULT_BIND.to_string();
+    apply_config(&cfg)?;
+    Ok(rpc_get())
+}
+
+/// 保存配置并按需启停监听（端口变更时先停再启，对齐 Linux `prisir_openapi_ui`）。
+pub fn apply_config(cfg: &OpenApiConfig) -> Result<String, String> {
+    if cfg.port < 1024 {
+        return Err("端口须在 1024–65535".into());
+    }
+    let mut cfg = cfg.clone();
+    cfg.bind = DEFAULT_BIND.to_string();
     save_config(&cfg)?;
 
-    // 运行时启停：enabled=true 且未听 → 启；enabled=false 且在听 → 停（下次 daemon 才真正释放，骨架用 STOP）
-    if cfg.enabled {
-        if !is_listening() {
-            let _ = start_listener(&cfg.bind, cfg.port)?;
-        }
-    } else if is_listening() {
+    let need_restart = is_listening()
+        && (active_port() != Some(cfg.port) || !cfg.enabled);
+    if need_restart || (!cfg.enabled && is_listening()) {
         request_stop();
+        // 等监听线程退出并释放端口
+        for _ in 0..40 {
+            if !is_listening() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 
-    Ok(rpc_get())
+    if cfg.enabled {
+        if is_listening() && active_port() == Some(cfg.port) {
+            return Ok(format!("已开启 · 监听 127.0.0.1:{}", cfg.port));
+        }
+        start_listener(&cfg.bind, cfg.port)?;
+        // 短暂探测：线程刚起可能尚未 accept
+        thread::sleep(Duration::from_millis(80));
+        if is_listening() {
+            Ok(format!("已开启 · 监听 127.0.0.1:{}", cfg.port))
+        } else {
+            Err("已写入配置，但监听未起来".into())
+        }
+    } else {
+        Ok("已关闭开放 API".into())
+    }
+}
+
+/// 探测本机端口 /health 是否可达（设置页状态用）。
+pub fn probe_health(port: u16) -> bool {
+    use std::net::TcpStream;
+    let Ok(mut stream) = TcpStream::connect_timeout(
+        &SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(400),
+    ) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(400)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(400)));
+    let req = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 512];
+    match stream.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            let s = String::from_utf8_lossy(&buf[..n]);
+            s.contains("\"ok\"") || s.contains("200")
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

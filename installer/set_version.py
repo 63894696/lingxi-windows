@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""改版本号 — prisIragent_ime/VERSION.txt 是 Windows 端唯一来源。
+"""改版本号 — prisiragent_ime/VERSION.txt 是 Windows 端唯一来源。
 
 用法:
-  python installer/set_version.py prisIragent_ime/VERSION.txt 1.0.0-beta.25   # 完整 semver
-  python installer/set_version.py prisIragent_ime/VERSION.txt beta.25          # 只给后缀，沿用现有 base
+  python installer/set_version.py prisiragent_ime/VERSION.txt 1.0.0-beta.25   # 完整 semver
+  python installer/set_version.py prisiragent_ime/VERSION.txt beta.25          # 只给后缀，沿用现有 base
 
 为什么单独一个脚本：版本号散落成三处（NSIS 默认值 / stage/VERSION.txt / 源码 VERSION.txt）
 曾导致"打包说是 beta.24、源码还是 beta.9"的错位。现在只改这一处，其余全部生成。

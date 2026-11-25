@@ -294,19 +294,69 @@ pub extern "C" fn prisir_ime_free(handle: *mut c_void) {
 // 由调用方按返回(JSON 空数组 / false)处理。字符串一律 UTF-8。
 // ============================================================
 
-/// 列出全部学习词 → JSON 数组 [{"key":"nihao","value":"你好","weight":100000,"seq":2},...]
-/// 按 seq(学习先后)升序。调用方须 `prisir_ime_free_string` 释放。
+/// 列出全部学习词 → JSON 数组 [{"key":"nihao","value":"你好","weight":100000,"seq":2,"pos":0},...]
+/// 按 seq(学习先后)升序。`pos>0` = 手工造词指定的候选位(快捷造词),0 = 自动学成。
+/// 调用方须 `prisir_ime_free_string` 释放。
 #[no_mangle]
 pub extern "C" fn prisir_ime_user_list(handle: *mut c_void) -> *mut c_char {
     let Some(engine) = get(handle) else {
         return to_c_string("[]".to_string());
     };
-    let rows = engine.user_list();
+    let rows = engine.db.list_user_words_with_pos();
     let arr: Vec<serde_json::Value> = rows
         .iter()
-        .map(|(k, v, w, s)| serde_json::json!({"key": k, "value": v, "weight": w, "seq": s}))
+        .map(|(k, v, w, s, p)| serde_json::json!({"key": k, "value": v, "weight": w, "seq": s, "pos": p}))
         .collect();
     to_c_string(serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// 手工造词:按 `pos`(1 起的候选位)写入 user_word。返回 1=成功, 0=失败。
+///
+/// 2026-11-24 新增(借鉴影子输入法「快捷造词」)。与 `user_add` 的区别:
+///   - `user_add`  → 自动学成语义(seq>0,固定置顶)
+///   - 本函数      → 手工语义(seq=0,pos 决定插在第几位)
+#[no_mangle]
+pub extern "C" fn prisir_ime_user_add_pos(
+    handle: *mut c_void,
+    pinyin: *const c_char,
+    word: *const c_char,
+    pos: i64,
+) -> i32 {
+    let (Some(p), Some(w)) = (cstr(pinyin), cstr(word)) else {
+        return 0;
+    };
+    match get(handle) {
+        Some(engine) if engine.user_add_pos(p, w, pos).is_ok() => 1,
+        _ => 0,
+    }
+}
+
+/// 中文词 → 自动编码(简拼)。"北京大学" → "bjdx"。失败返 null。
+/// 快捷造词窗口 / Agent 批量入库用:用户只给中文,编码由引擎算。
+#[no_mangle]
+pub extern "C" fn prisir_ime_auto_code(handle: *mut c_void, word: *const c_char) -> *mut c_char {
+    let Some(w) = cstr(word) else {
+        return std::ptr::null_mut();
+    };
+    match get(handle).and_then(|e| e.auto_code(w)) {
+        Some(code) if !code.is_empty() => to_c_string(code),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// 中文词 → **全拼**。"北京大学" → "beijingdaxue";算不出来 → null。
+///
+/// 2026-11-25:造词写库时优先用它当主 key(简拼由引擎自动补别名行),
+/// 这样全拼、简拼、混拼三种打法都能出词。`auto_code` 仍保留给窗口显示用。
+#[no_mangle]
+pub extern "C" fn prisir_ime_word_pinyin(handle: *mut c_void, word: *const c_char) -> *mut c_char {
+    let Some(w) = cstr(word) else {
+        return std::ptr::null_mut();
+    };
+    match get(handle).and_then(|e| e.word_pinyin(w)) {
+        Some(code) if !code.is_empty() => to_c_string(code),
+        _ => std::ptr::null_mut(),
+    }
 }
 
 /// 手动加词(走学成置顶固定权重)。返回 1=成功, 0=失败。
@@ -331,6 +381,40 @@ pub extern "C" fn prisir_ime_user_remove(handle: *mut c_void, pinyin: *const c_c
         Some(engine) => engine.user_remove(p, w).unwrap_or(0) as i32,
         None => 0,
     }
+}
+
+/// 按**词本身**删除学习行(不需要编码)。返回删除行数。
+///
+/// 2026-11-25:用户能看见候选里的垃圾词,但不记得当初的输入串 →
+/// 清理时必须能只凭词删除。GUI「学习词」行删除与 `--del-word` 都走这里。
+#[no_mangle]
+pub extern "C" fn prisir_ime_user_remove_value(handle: *mut c_void, word: *const c_char) -> i32 {
+    let Some(w) = cstr(word) else { return 0; };
+    match get(handle) {
+        Some(engine) => engine.user_remove_by_value(w).unwrap_or(0) as i32,
+        None => 0,
+    }
+}
+
+/// 在用户词层搜索(子串;key 或 value 命中都算)。空串 = 最近学成的 50 条。
+/// 返回 JSON 数组 [{"key":..,"value":..,"weight":N},...]。调用方须 free_string。
+#[no_mangle]
+pub extern "C" fn prisir_ime_user_search(
+    handle: *mut c_void,
+    term: *const c_char,
+    limit: i32,
+) -> *mut c_char {
+    let Some(t) = cstr(term) else { return to_c_string("[]".to_string()); };
+    let lim = if limit <= 0 { 50 } else { limit as usize };
+    let Some(engine) = get(handle) else {
+        return to_c_string("[]".to_string());
+    };
+    let rows = engine.user_search(t, lim);
+    let arr: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(k, v, w)| serde_json::json!({"key": k, "value": v, "weight": w}))
+        .collect();
+    to_c_string(serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string()))
 }
 
 /// 清空全部学习记录。返回 1=成功, 0=失败。

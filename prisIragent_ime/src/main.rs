@@ -3,7 +3,7 @@
 //!   --enable / --disable — T5 新增,改 Enable DWORD(不删 dll)
 //!   --ipc / --ipc-test   — T6 新增,stdio JSON-RPC server(7 个 method,给 chrome UI / extension 调)
 //!   --method             — T7 新增,切换拼音/五笔(纯内存,不写 HKCU)
-//!   --about <key>        — 显示 关于/隐私政策/使用条款/问题反馈 正文
+//!   --about <key>        — 显示 使用说明/关于/隐私/条款/开放API/问题反馈(对齐 Linux/Android；AGPL-3.0)
 //!
 //! 用法:
 //!   prisir_tsfsvc --version
@@ -53,19 +53,20 @@ fn main() {
             println!("register: HKCU CTF TIP + COM InprocServer32 (per-user, no admin)");
             println!("daemon: WTSRegisterSessionNotification + hidden HWND + 真消息循环 (T10) + DLL mtime 热重载 (T5)");
             println!("ipc: stdio JSON-RPC,9 methods (+open_api.get/set) — T6");
-            println!("open_api: 本机 Agent 定制输入法用；默认关；127.0.0.1:23331；config %LOCALAPPDATA%\\Prisir\\IME\\open_api.json");
+            println!("open_api: localhost HTTP skeleton (127.0.0.1, default port 23331), config %LOCALAPPDATA%\\Prisir\\IME\\open_api.json");
             println!("input method: 拼音(默认=右Ctrl) / 五笔(默认=右Shift), --method <pinyin|wubi> 切换 — T7");
             println!("CATID: {{36C679D9-696D-4A1B-9D8B-313E62CD3C30}} (msctf.h CATID_TIP_KEYBOARD)");
             println!();
             println!("{}", about::about_links_inline());
         }
         Some("--about") => {
+            // 2026-08-29 新增: 与 Android 端 UserDictActivity 底部 4 段正文对齐
             let key = match args.get(2).map(|s| s.as_str()) {
                 Some(k) => k,
                 None => {
-                    println!("说明页 — 可选 key: about | privacy | terms | openapi | feedback");
+                    println!("关于页 — 可选 key: help | about | privacy | terms | openapi | feedback");
                     println!("用法: prisir_tsfsvc --about <key>");
-                    println!("不传 key 时列出全部说明段。");
+                    println!("不传 key 时列出全部段落(便于一次性阅读)。");
                     println!();
                     for k in about::ABOUT_TITLES {
                         if let Some((title, body)) = about::lookup(title_to_key(k)) {
@@ -85,7 +86,7 @@ fn main() {
                 }
                 None => {
                     eprintln!("[about] 未知 key: {}", key);
-                    eprintln!("[about] 接受: about | privacy | terms | openapi | feedback  （旧名 copyright/contact 仍兼容）");
+                    eprintln!("[about] 接受: help | about | privacy | terms | openapi | feedback");
                     std::process::exit(1);
                 }
             }
@@ -93,7 +94,7 @@ fn main() {
         Some("--help") => {
             println!("用法:");
             println!("  prisir_tsfsvc --version");
-            println!("  prisir_tsfsvc --about <about|privacy|terms|openapi|feedback>  # 显示说明页正文");
+            println!("  prisir_tsfsvc --about <help|about|privacy|terms|openapi|feedback>  # 说明文案(对齐 Linux/Android)");
             println!("  prisir_tsfsvc --help");
             println!("  prisir_tsfsvc --query-test <pinyin> [db_path]");
             println!("  prisir_tsfsvc --register [dll_path]");
@@ -108,8 +109,15 @@ fn main() {
             println!("  prisir_tsfsvc --daemon");
             println!("  prisir_tsfsvc --ipc                   # T6: stdio JSON-RPC server");
             println!("  prisir_tsfsvc --ipc-test              # T6: 跑 3 个无害烟囱");
-            println!("  prisir_tsfsvc --open-api [--port N]   # 前台起本机开放 API（Agent 接入冒烟）");
+            println!("  prisir_tsfsvc --open-api [--port N]   # 前台起 localhost HTTP 开放 API(冒烟)");
             println!("  prisir_tsfsvc --open-api-config [show|enable|disable|port N]");
+            println!("  prisir_tsfsvc --quick-add             # 打开「灵犀造词」窗口(不依赖热键,自带消息循环)");
+            println!("  prisir_tsfsvc --quick-add-hotkey [组合|off]  # 看/改造词热键,如 Ctrl+Alt+E / Alt+Q / off");
+            println!("  prisir_tsfsvc --add-word <词条> [--pinyin 全拼] [--pos N]  # 命令行加词(agent/脚本用)");
+            println!("  prisir_tsfsvc --del-word <词条> [--pinyin 全拼]  # 删掉一条学习/手造词(清理误学;不传 --pinyin 按词删所有编码行)");
+            println!("  prisir_tsfsvc --user-list [关键词] [--limit N]  # 列用户词层(学习词+手造词),子串匹配");
+            println!("  prisir_tsfsvc --user-dict             # 独立开「词库管理」窗口(搜索→选 [学] 行→删除)");
+            println!("  prisir_tsfsvc --plugins               # 打印插件解析结果(排查「没有语/AI 按钮」)");
             println!();
             println!("db_path 缺省查找顺序:");
             println!("  1. env PRISIR_CIKU_DB");
@@ -123,10 +131,8 @@ fn main() {
             println!("daemon: 5s 轮询,WTS session 变化 + DLL mtime 变化触发热重载,Ctrl-C 退出。");
             println!("        若 open_api.json enabled=true,daemon 同时起 http://127.0.0.1:PORT/");
             println!("ipc: stdin/stdout 一行一 JSON-RPC, chrome extension 用 child_process 调起。");
-            println!("open_api: 供本机 AI Agent 定制个性化输入法；默认关；");
-            println!("          开启: prisir_tsfsvc --open-api-config enable");
-            println!("          仅 127.0.0.1；配置 %LOCALAPPDATA%\\Prisir\\IME\\open_api.json；");
-            println!("          GET /health /status ; POST /rpc (JSON-RPC)。详见 --about openapi");
+            println!("open_api: 默认关;设置页勾选后写 %LOCALAPPDATA%\\Prisir\\IME\\open_api.json;");
+            println!("          GET /health /status ; POST /rpc (JSON-RPC,复用 ipc methods)。");
         }
         Some("--query-test") => {
             let pinyin = args.get(2).map(|s| s.as_str()).unwrap_or("nihao");
@@ -184,6 +190,22 @@ fn main() {
             }
         }
         Some("--daemon") => run_daemon(),
+        // ── 快捷造词(2026-11-25)─────────────────────────────────────────
+        // `--quick-add`:独立进程起窗口,自带消息循环。热键被别的软件抢走、或
+        // TSF 宿主在某个程序里没激活时,这条是唯一一定能开的通道。
+        Some("--quick-add") => std::process::exit(prisiragent_ime::quick_add_window::run_standalone()),
+        // `--quick-add-hotkey [combo]`:看/改热键。off = 关热键,只走菜单「造词」。
+        Some("--quick-add-hotkey") => run_quick_add_hotkey(args.get(2).map(|s| s.as_str())),
+        // `--add-word <词条> [--pinyin <全拼>] [--pos N]`:agent / 脚本入口(无 GUI)。
+        Some("--add-word") => run_add_word(&args[2..]),
+        // `--del-word <词条> [--pinyin <全拼>]`:删掉一条误学/手造词(清理污染)。
+        Some("--del-word") => run_del_word(&args[2..]),
+        // `--user-list [关键词]`:列用户词层(学习词+手造词)。看见才能删。
+        Some("--user-list") => run_user_list(&args[2..]),
+        // `--user-dict`:独立开「词库管理」窗口(自带消息循环),不依赖输入法在某程序激活。
+        Some("--user-dict") => std::process::exit(prisiragent_ime::userdict_window::run_standalone()),
+        // `--plugins`:打印插件解析结果(为什么悬浮栏没有「语」/AI 按钮 —— 排查入口)。
+        Some("--plugins") => run_plugins(),
         Some("--ipc") => {
             // T6: stdio JSON-RPC server。stdin EOF 时退出 0。
             if let Err(e) = prisiragent_ime::ipc::run_ipc_server() {
@@ -272,7 +294,6 @@ fn run_open_api_config(rest: &[String]) {
                 std::process::exit(41);
             }
             println!("[open-api-config] enabled=true port={} path={}", cfg.port, config_path().display());
-            println!("[open-api-config] 已开启：本机 AI Agent 可接入定制输入法（仅 127.0.0.1）");
             println!("[open-api-config] 需 daemon 在跑才会监听;或: prisir_tsfsvc --open-api");
         }
         "disable" => {
@@ -305,6 +326,206 @@ fn run_open_api_config(rest: &[String]) {
             std::process::exit(1);
         }
     }
+}
+
+/// `--quick-add-hotkey [组合|off]`
+///
+/// 无参数:打印当前配置 + 配置文件路径。
+/// 有参数:校验 → 落盘 → 打印结果。校验不通过**不改原配置**(错误配置会让输入法吃掉裸字母)。
+///
+/// 说明:热键判定在 TSF 进程里,配置带 1 秒 TTL 缓存,所以改完下一个键就生效,不用重启任何东西。
+fn run_quick_add_hotkey(arg: Option<&str>) {
+    use prisiragent_ime::hotkey::{load_quick_add, save_quick_add, quick_add_config_path, QuickAddHotkey};
+    let path = quick_add_config_path();
+    let Some(text) = arg else {
+        let cur = load_quick_add();
+        println!("[quick-add-hotkey] 当前: {}", cur.describe());
+        if cur.enabled {
+            println!("[quick-add-hotkey] 组合: ctrl={} alt={} shift={} win={} vk=0x{:02X}",
+                cur.ctrl, cur.alt, cur.shift, cur.win, cur.vk);
+        }
+        println!("[quick-add-hotkey] 配置: {}", path.display());
+        println!("[quick-add-hotkey] 改法: --quick-add-hotkey Ctrl+Alt+E | Alt+Q | F9 需带修饰键 | off 关闭");
+        println!("[quick-add-hotkey] 关掉热键后用托盘菜单「造词」,或 prisir_tsfsvc --quick-add 打开窗口。");
+        return;
+    };
+    match QuickAddHotkey::parse(text) {
+        Ok(cfg) => match save_quick_add(&cfg) {
+            Ok(()) => {
+                println!("[quick-add-hotkey] 已设为: {}", cfg.describe());
+                println!("[quick-add-hotkey] 写入: {}", path.display());
+                println!("[quick-add-hotkey] 下次按键即生效(1 秒缓存),无需重启。");
+                if !cfg.enabled {
+                    println!("[quick-add-hotkey] 热键已关闭 → 请从托盘菜单「造词(加入词库)」进入。");
+                }
+            }
+            Err(e) => {
+                eprintln!("[quick-add-hotkey] 保存失败: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("[quick-add-hotkey] 配置无效: {e}");
+            eprintln!("[quick-add-hotkey] 原配置未改动。用法: --quick-add-hotkey <组合|off>");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--plugins`:打印插件解析结果。
+///
+/// 排查「悬浮栏为什么没有语 / AI 按钮」用:插件 = plugins.json 声明 + exe 存在 +
+/// enabled 三件事同时成立才会出现。语音现在有内置「语」按钮兜底,不依赖本文件。
+fn run_plugins() {
+    let root = prisiragent_ime::plugin::plugin_root();
+    println!("[plugins] plugin_root = {}", root.display());
+    let json = root.join("plugins.json");
+    // 与 available_plugins() 用同一个读取器(UTF-8 优先 + 系统 ANSI 兜底),
+    // 否则诊断会说「读不到」而实际插件已生效,误导排查。
+    match prisiragent_ime::plugin::plugins_json_text() {
+        Some(s) => println!("[plugins] plugins.json 存在 ({} 字节)\n{}", s.len(), s),
+        None => println!(
+            "[plugins] plugins.json 读不到(缺失或非文本): {}",
+            json.display()
+        ),
+    }
+    let avail = prisiragent_ime::plugin::available_plugins();
+    println!("[plugins] 可用插件 {} 个:", avail.len());
+    for p in &avail {
+        println!(
+            "  - id={} name={} button={:?} event={} exe={}",
+            p.id,
+            p.name,
+            p.button,
+            p.event,
+            p.exe
+        );
+    }
+    // 语音单独一行结论(内置按钮按默认路径兜底,不依赖 plugins.json)
+    let ok = prisiragent_ime::plugin::trigger_voice_probe();
+    println!("[plugins] 语音插件(exe 可解析) = {}", ok);
+}
+
+/// `--add-word <词条> [--pinyin <全拼>] [--pos N]`
+///
+/// 给 agent / 脚本用的无 GUI 入口:读一篇资料后把专有名词批量入库,比开窗口快。
+/// 编码推导与 GUI 完全同一条引擎路径(`ffi::add_word_auto`),不会出现两条写法。
+fn run_add_word(rest: &[String]) {
+    let mut word: Option<String> = None;
+    let mut pinyin: Option<String> = None;
+    let mut pos: i64 = 1;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--pinyin" | "-p" => match rest.get(i + 1) {
+                Some(v) => { pinyin = Some(v.clone()); i += 2; }
+                None => { eprintln!("[add-word] --pinyin 缺少值"); std::process::exit(1); }
+            },
+            "--pos" => match rest.get(i + 1).and_then(|v| v.parse::<i64>().ok()) {
+                Some(v) => { pos = v; i += 2; }
+                None => { eprintln!("[add-word] --pos 需要一个数字(1-50)"); std::process::exit(1); }
+            },
+            other if word.is_none() => { word = Some(other.to_string()); i += 1; }
+            other => { eprintln!("[add-word] 多余参数: {other}"); std::process::exit(1); }
+        }
+    }
+    let Some(word) = word else {
+        eprintln!("用法: prisir_tsfsvc --add-word <词条> [--pinyin <全拼>] [--pos N]");
+        eprintln!("例:   prisir_tsfsvc --add-word 灵犀输入法");
+        eprintln!("例:   prisir_tsfsvc --add-word 丫客比方 --pinyin yakebifangxiang --pos 1");
+        std::process::exit(1);
+    };
+    match prisiragent_ime::ffi::add_word_auto(&word, pinyin.as_deref(), pos.clamp(1, 50)) {
+        Ok(code) => {
+            println!("[add-word] 已加入: {word} → {code} (候选第 {pos} 位)");
+            println!("[add-word] 全拼/简拼/混拼都能命中(引擎写主行+简拼别名)。");
+        }
+        Err(e) => {
+            eprintln!("[add-word] 失败: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--del-word <词条> [--pinyin <编码>]` —— 删掉一条误学/手造词。
+///
+/// 为什么必须有这条:学习是「输入 → 上屏词」的关联。历史上空格上屏层会把
+/// 候选窗的词替换成整句解码结果再学进去(如 `yakebicx → 有啊可比出现`),
+/// 一旦学进用户词库就会在后续候选里冒出来。中间层已删除,但已经污染的库
+/// 需要一条明确的清理通道 —— 不给,用户只能去删 `ciku.user.db`。
+fn run_del_word(rest: &[String]) {
+    let mut word: Option<String> = None;
+    let mut pinyin: Option<String> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--pinyin" | "-p" => match rest.get(i + 1) {
+                Some(v) => { pinyin = Some(v.clone()); i += 2; }
+                None => { eprintln!("[del-word] --pinyin 缺少值"); std::process::exit(1); }
+            },
+            other if word.is_none() => { word = Some(other.to_string()); i += 1; }
+            other => { eprintln!("[del-word] 多余参数: {other}"); std::process::exit(1); }
+        }
+    }
+    let Some(word) = word else {
+        eprintln!("用法: prisir_tsfsvc --del-word <词条> [--pinyin 编码]");
+        eprintln!("例:   prisir_tsfsvc --del-word 有啊可比出现 --pinyin yakebicx");
+        std::process::exit(1);
+    };
+    // 不给编码 → 按词本身删(遍历该词所有编码行)。这是用户真正的清理通道:
+    // 他记得的是「哪个词是垃圾」,不是当初打了什么。
+    let n = match pinyin {
+        Some(code) => prisiragent_ime::ffi::user_dict_remove(&code, &word),
+        None => {
+            let byv = prisiragent_ime::ffi::user_dict_remove_value(&word);
+            if byv < 0 {
+                // 旧引擎 DLL 没有按词删除导出 → 提示必须给编码
+                eprintln!("[del-word] 当前 prisir_ime.dll 不支持按词删除,请加 --pinyin <编码>");
+                std::process::exit(3);
+            }
+            byv
+        }
+    };
+    if n > 0 {
+        println!("[del-word] 已删除 {n} 行: {word}");
+    } else {
+        println!("[del-word] 没删到「{word}」—— 学习/手造词里没有这一条(可能已删过,或它来自主词库)。");
+        println!("[del-word] 可先用 `--user-list {word}` 查一下用户词层里到底有什么。");
+        std::process::exit(2);
+    }
+}
+
+/// `--user-list [关键词]` —— 列出用户词层(学习词 + 手造词)。
+///
+/// 为什么需要:`--del-word` 只能删「存在的东西」,用户得先看见才能删。
+/// 关键词是**子串**匹配(key 或 value 任一命中);不给关键词 = 最近学成的 50 条。
+fn run_user_list(rest: &[String]) {
+    let term = rest.first().cloned().unwrap_or_default();
+    let limit: i32 = rest
+        .iter()
+        .position(|s| s == "--limit")
+        .and_then(|i| rest.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+    let Some(json) = prisiragent_ime::ffi::user_dict_search_json(&term, limit) else {
+        eprintln!("[user-list] 读不到用户词层(引擎 DLL 缺 user_search 导出?)");
+        std::process::exit(1);
+    };
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+    if arr.is_empty() {
+        println!("[user-list] 没有匹配的用户词(关键词: {})", if term.is_empty() { "<全部>" } else { &term });
+        return;
+    }
+    println!("[user-list] {} 条(关键词: {}):", arr.len(), if term.is_empty() { "<最近学成>" } else { &term });
+    for v in &arr {
+        println!(
+            "  {:<20} {}  (weight={})",
+            v["key"].as_str().unwrap_or(""),
+            v["value"].as_str().unwrap_or(""),
+            v["weight"].as_i64().unwrap_or(0)
+        );
+    }
+    println!("[user-list] 删除某条: prisir_tsfsvc --del-word <词>");
 }
 
 /// 读 VERSION.txt(单一来源),对齐 Android 端的 `oi_enhancements/VERSION.txt` 字段。
@@ -342,15 +563,16 @@ fn read_version_txt() -> Option<(String, String, String)> {
     None
 }
 
-/// 把菜单/列表标题翻成 about.rs 的 key。
+/// 把中文标题翻成 about.rs 的 key。
 fn title_to_key(title: &str) -> &'static str {
     match title {
+        "使用说明" => "help",
         "关于" => "about",
+        "版权声明" => "copyright",
         "隐私政策" | "隐私说明" => "privacy",
         "使用条款" => "terms",
         "开放 API" | "开放API" => "openapi",
         "问题反馈" | "反馈联系" => "feedback",
-        "版权声明" => "about",
         _ => "about",
     }
 }
@@ -368,21 +590,21 @@ fn run_register(dll_override: Option<String>) {
             .into_owned()
     });
     println!("[register] dll: {}", dll);
-    println!("[register] mode: HKCU + HKLM (per-machine COM/TIP registration)");
+    println!("[register] mode: HKCU only (per-user, no admin required)");
 
     match prisiragent_ime::register::do_register(&dll) {
         Ok(r) => {
             println!("[register] OK ({} entries written)", r.entries_written);
             println!("[register] CLSID: {}", prisiragent_ime::register::CLSID_PRISIR_IME_STR);
-            println!("[register] NOTE: restart explorer.exe (or sign out) for CTF changes to take effect");
-            println!("[register] Verify: run `prisir_tsfsvc --status` or `reg query \"HKCU\\SOFTWARE\\Microsoft\\CTF\\TIP\\{}\"", prisiragent_ime::register::CLSID_PRISIR_IME_STR);
+            println!("[register] 重要: Windows CTF 注册后必须重启 explorer.exe 才生效");
+            println!("[register] 验证: 运行 `prisir_tsfsvc --status` 或 `reg query \"HKCU\\SOFTWARE\\Microsoft\\CTF\\TIP\\{}\\;`", prisiragent_ime::register::CLSID_PRISIR_IME_STR);
             std::process::exit(0);
         }
         Err(e) => {
             eprintln!("[register] FAIL: {e}");
-            eprintln!("[register] Hint: no admin rights; cannot write HKLM. Try:");
-            eprintln!("[register]   prisir_tsfsvc --register-elevated  (UAC prompt)");
-            eprintln!("[register]   or regsvr32 \"C:\\Program Files\\PrisirIME\\prisir_ime_tsf.dll\"");
+            eprintln!("[register] 提示: 当前进程无 admin,HKLM 路径写不了。改用:");
+            eprintln!("[register]   `prisir_tsfsvc --register-elevated` (自动 UAC 提权)");
+            eprintln!("[register]   或 `regsvr32 \"C:\\Program Files\\PrisirIME\\prisir_ime_tsf.dll\"` (T24 P3 DllRegisterServer)");
             std::process::exit(10);
         }
     }

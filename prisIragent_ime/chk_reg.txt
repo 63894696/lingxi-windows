@@ -1,4 +1,4 @@
-    Checking prisiragent_ime v0.7.0 (D:\Projects\lingxi-windows\prisIragent_ime)
+    Checking prisiragent_ime v0.7.0 (D:\Projects\lingxi-windows\prisiragent_ime)
 warning: unused import: `WTS_INFO_CLASS`
    --> src\register.rs:412:22
     |

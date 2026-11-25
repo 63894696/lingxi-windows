@@ -21,6 +21,7 @@ pub mod ffi;
 pub mod tsf_input_processor;
 pub mod edit_session;
 pub mod candidate_window;
+pub mod quick_add_window;   // 快捷造词(2026-11-24,借鉴影子输入法)
 pub mod panels;
 pub mod userdict_window;
 pub mod handwriting_panel;
@@ -36,7 +37,12 @@ pub mod ipc;
 pub mod open_api;
 pub mod about;
 pub mod about_window;
-pub mod feedback;        // 问题反馈诊断包 + 打开论坛
+pub mod openapi_window; // 开放 API 设置窗（开关 + 端口，对齐 Linux prisir_openapi_ui）
+pub mod active_signal;   // 每日活跃信号(学 PrisirAI updates.json 轮询)
+// 2026-11-25:翻译模块已移除(Windows 端只做「首选候选词翻译」,不能像安卓那样
+// 选中整段/多语种,又要联网,与系统专业翻译工具重复 —— 用户决定去掉)。
+// 源文件 translate.rs 已删除;如需回滚,从 git 历史取 f0db759 之前的版本。
+pub mod feedback;        // ⚙反馈问题诊断包(学 PrisirAI _build_feedback_zip)
 pub mod plugin;          // 进程外插件框架(plugins.json + 动态菜单/按钮 + 命名事件 toggle)
 pub mod langbar;
 pub mod elevate;

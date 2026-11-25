@@ -1,16 +1,20 @@
-//! 问题反馈诊断包（2026-09-04）。
+//! 反馈诊断包(2026-09-04)——学 PrisirAI ⚙反馈问题(_build_feedback_zip)。
 //!
-//! 菜单「问题反馈」→ 打包 logs / system_info / 版本元数据 / 脱敏设置到桌面 zip，
-//! 并打开 BabelSpan 论坛，由用户自行上传附件。
+//! **目的**:给用户省下描述,给我们精确看故障记录。菜单点「反馈问题」→
+//! 打包 logs + system_info + 版本元数据 + 脱敏设置到桌面 zip,用户自己上传论坛。
 //!
-//! 实现：无 zip crate，手写 store 法 zip；失败时 PowerShell Compress-Archive 兜底。
-//! 隐私：settings 脱敏；system_info 不含 IP/MAC/输入正文。
+//! **实现约束**:IME 无 zip 依赖(不引 flate2/zip crate),手写**无压缩(store)zip 容器**。
+//! zip 是一种可手写的简单容器:local file header + file data + central directory + EOCD。
+//! store 法压缩率=1,但日志文本小,够用。失败时 PowerShell Compress-Archive 兜底。
+//!
+//! **隐私**:settings.json 脱敏(抠 key 值留存在性布尔,学 _sanitize_settings_for_zip);
+//! system_info 只含 OS/CPU/磁盘,不含 IP/MAC/会话正文。
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// 论坛反馈页（与 about::FORUM_URL 保持一致）。
-pub const FORUM_URL: &str = crate::about::FORUM_URL;
+/// 论坛反馈页:灵犀输入法子版(forum_relay.py BOARDS browser/ime)。
+pub const FORUM_URL: &str = "https://bbs.babelspan.com/forum.html#board=browser/ime&hint=prisirai";
 
 fn log_fb(msg: &str) {
     crate::com_class_factory::log_dll_entry(&format!("[feedback] {}", msg));
@@ -59,8 +63,8 @@ pub fn open_forum() {
     }
 }
 
-/// 打包 + 打开论坛（菜单「问题反馈」一站式）。
-/// 异步：打包可能读大日志，放后台线程，不卡菜单/UI。
+/// 打包 + 打开论坛(菜单「反馈问题」一站式)。
+/// **异步**:zip 打包 + 网络无关,但打包可能读大日志,放后台线程,不卡菜单/UI。
 pub fn feedback_and_open() {
     std::thread::spawn(|| {
         let z = build_feedback_zip();
@@ -134,8 +138,8 @@ fn collect_repo_meta() -> String {
         "ime_version": env!("CARGO_PKG_VERSION"),
         "build": option_env!("PRISIR_BUILD").unwrap_or("dev"),
         "log_path": r"C:\Temp\prisir_dll_log.txt",
-        "website": crate::about::WEBSITE_URL,
         "forum": FORUM_URL,
+        "license": "AGPL-3.0",
     });
     serde_json::to_string_pretty(&meta).unwrap_or_else(|_| "{}".into())
 }

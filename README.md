@@ -10,7 +10,8 @@
 - **拼音输入**：全拼 / 混拼候选、整句解码、学习上屏
 - **简繁切换**：本地转换，不依赖网络
 - **语音听写（可选插件）**：本机识别，不外发音频
-- **个人词库**：选词自学习；词库管理、黑白名单、导入导出——百分百本机自主管理
+- **个人词库**：选词自学习；词库管理、导入导出——百分百本机自主管理
+- **灵犀造词**：手工加词并指定候选位（全拼主行 + 简拼别名）
 - **开放 API（可选）**：默认关闭；开启后仅监听本机 `127.0.0.1`，供本机 AI Agent / 脚本按习惯协助配置输入法
 
 ## 隐私
@@ -24,45 +25,17 @@
 
 ## 仓库结构（简述）
 
-| 目录 | 说明 |
+| 路径 | 说明 |
 |------|------|
-| `prisIragent_ime/` | Windows TSF 外壳与服务（含开放 API） |
-| `prisir_ime/` | 同源 Rust 引擎 |
-| `voice_input/` | 可选语音听写组件 |
-| `installer/` | 安装包构建脚本与舞台资源 |
+| `prisir_ime/` | 共享 Rust 引擎（候选 / 词库 / 学习） |
+| `prisIragent_ime/` | Windows TSF 外壳与状态栏 |
+| `installer/` | NSIS 安装包脚本与舞台文件 |
+| `voice_input/` | 可选语音听写插件 |
 
-## 安装
+## 构建（开发者）
 
-从官网下载最新 Setup 安装包，按向导完成；在 Windows「语言 → 中文 → 选项 → 键盘」中启用灵犀。
+详见 [`installer/BUILD.md`](installer/BUILD.md)。日常用户请从官网下载安装包，无需自行编译。
 
-开发者打安装包可参考 `installer/` 目录内脚本说明。
+## 许可证
 
-## 开放 API（可选）
-
-面向「用 AI 帮助用户定制个性化输入法」：本机 Agent 可查询状态、调整配置、访问词库相关能力。
-
-```text
-prisir_tsfsvc --open-api-config enable    # 需要时开启
-prisir_tsfsvc --open-api-config disable   # 关闭
-prisir_tsfsvc --about openapi             # 说明
-```
-
-默认关闭；仅本机回环，不外发数据。
-
-## 相关链接
-
-- 官网介绍与安装包：https://www.babelspan.com/prisir-ime.html
-- Android 仓：https://github.com/63894696/lingxi-android
-- Linux 仓：https://github.com/63894696/lingxi-linux
-- 问题反馈：https://bbs.babelspan.com/forum.html#board=browser/ime&hint=prisirai
-
-版权所有 © 2026 BabelSpan。
-
-## License
-
-**GNU Affero General Public License v3.0 or later** — see [LICENSE](LICENSE).
-
-Attribution is required, and derivative works must remain open source, including
-when the software is only offered as a network service (AGPL §13). What is
-covered, what keeps its own license, and the commercial-exception path are
-described in [LICENSING.md](LICENSING.md).
+本仓库以 **GNU Affero General Public License v3.0 or later** 发布，详见 [LICENSE](LICENSE)、[LICENSING.md](LICENSING.md)、[NOTICE](NOTICE)。

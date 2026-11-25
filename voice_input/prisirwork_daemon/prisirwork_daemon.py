@@ -127,8 +127,6 @@ def _cmd_calc(arg: str) -> str:
                ast.Div: op.truediv, ast.Mod: op.mod, ast.USub: op.neg,
                ast.UAdd: op.pos}
         def ev(node):
-            if isinstance(node, ast.Num):
-                return node.n
             if isinstance(node, ast.Constant):
                 return node.value
             if isinstance(node, ast.BinOp):

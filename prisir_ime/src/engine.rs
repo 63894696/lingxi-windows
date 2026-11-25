@@ -333,6 +333,13 @@ impl ImeEngine {
     ///
     /// 这是中英判定的关键信号。不能用 `query()` 的候选数代替 —— query 带模糊音
     /// 与贪心切分兼底,`hello`/`world` 这类纯英文实测都能返回 50 条候选。
+    ///
+    /// **2026-11-25 补混拼**:`limancx` / `yakebicx` 这类「全拼头 + 尾部首字母」
+    /// 以前这里查不到精确命中 → lang 判英文 → 候选被替换成原样字母 → 用户看到
+    /// 「打了混拼没候选,直接上屏字母」。现在把混拼通道也算作拼音命中:
+    ///   - 主词库:key 前缀 + 尾部首字母匹配(与 query() 完全相同的一套判定);
+    ///   - 用户手工造词:`--add-word` 写的简拼别名 / 混合形态。
+    /// 纯全拼早就被 lang 直接判拼音,这里提前返回省掉几次查询。
     fn has_exact_hit(&self, input: &str) -> bool {
         if input.is_empty() {
             return false;
@@ -345,10 +352,21 @@ impl ImeEngine {
         {
             return true;
         }
-        self.db
+        if self
+            .db
             .query_phrase_by_jp(input, 1)
             .map(|r| !r.is_empty())
             .unwrap_or(false)
+        {
+            return true;
+        }
+        if self.is_full_pinyin(input) {
+            return false; // 全拼音节输入恒判拼音,不必再走混拼通道
+        }
+        if !self.query_phrase_abbrev_tail(input).is_empty() {
+            return true;
+        }
+        !self.db.manual_words_mixed(input).is_empty()
     }
 
     /// P0 智能标点(2026-11-16)。
@@ -531,8 +549,8 @@ impl ImeEngine {
 
     /// 九宫格：用户**选定某个读音**后的候选（该读音的精确词 + 以它开头的更长词）。
     pub fn query_reading_candidates(&self, reading: &str) -> Vec<Candidate> {
-        // 读音里的空格只是给人看的，词库 key 不带空格
-        let key: String = reading.chars().filter(|c| !c.is_whitespace()).collect();
+        // 读音里的空格/分词符只是给人看的，词库 key 只要字母
+        let key: String = reading.chars().filter(|c| c.is_ascii_alphabetic()).collect();
         let (e, p) = self.query_reading(&key);
         let mut out = e;
         out.extend(p);
@@ -624,8 +642,8 @@ impl ImeEngine {
         let mut uniq: Vec<(String, String)> = Vec::new();
         let mut seen_key: HashMap<String, usize> = HashMap::new();
         for p in self.syll.t9_expand(digits) {
-            // 词库 key 不带空格："ni hao" → "nihao"
-            let key: String = p.chars().filter(|c| !c.is_whitespace()).collect();
+            // 词库 key 不带空格/分词符："ni hao" / "xi'an" → "nihao" / "xian"
+            let key: String = p.chars().filter(|c| c.is_ascii_alphabetic()).collect();
             match seen_key.get(&key) {
                 Some(&idx) => {
                     if p.split(' ').count() < uniq[idx].1.split(' ').count() {
@@ -672,11 +690,13 @@ impl ImeEngine {
             entries.push((key.clone(), p.clone(), e, pre));
         }
         if entries.is_empty() {
-            // 拼不出读音 → 只能给词，界面不显示读音条
+            // 拼不出读音 → 只能给词，界面不显示读音条。
+            // 分词符 `'` 不是 t9 表键的一部分，回退查库时先剥掉。
+            let bare: String = digits.chars().filter(|c| c.is_ascii_digit()).collect();
             return T9Result {
                 pinyins: Vec::new(),
                 words: self.db
-                    .query_t9(digits, 30)
+                    .query_t9(&bare, 30)
                     .unwrap_or_default()
                     .into_iter()
                     .collect(),
@@ -955,7 +975,17 @@ impl ImeEngine {
             }
         }
 
-        if !seen.is_empty() || !user_words.is_empty() {
+        // 手工造词(2026-11-24 快捷造词):位置由 pos 决定,在候选组装完成后插位。
+        // 与自动学成词(seq>0,前置置顶)是两条互不干扰的路径。
+        //
+        // 精确 key 查不到时再试「混拼」(2026-11-25):手工词存的是全拼主行,
+        // 用户打 yakebicx 这种前全拼后简拼的输入时 key 对不上,靠音节对齐兜住。
+        let mut manual = self.db.manual_words_for(input);
+        if manual.is_empty() {
+            manual = self.db.manual_words_mixed(input);
+        }
+
+        if !seen.is_empty() || !user_words.is_empty() || !manual.is_empty() {
             // 多字真整词优先于单字,同权重整词靠前
             let mut merged: Vec<Candidate> = seen.into_iter().collect();
             // 排序必须完全确定(2026-09-02 修「翻页候选顺序漂移」):seen 是 HashMap,
@@ -995,15 +1025,105 @@ impl ImeEngine {
                 out.extend(fz.into_iter().take(10));
             }
             out.truncate(50);
-            return out;
+            let out = self.with_sentence_head(out, input, n_syll);
+            return Self::splice_manual(out, &manual, 50);
         }
 
         // 多字母无整匹配:取首音节单字
         let segs = self.segment(input);
         if !segs.is_empty() {
-            return self.db.query_pinyin(&segs[0], 50).unwrap_or_default();
+            let out = self.db.query_pinyin(&segs[0], 50).unwrap_or_default();
+            let out = self.with_sentence_head(out, input, n_syll);
+            return Self::splice_manual(out, &manual, 50);
         }
-        Vec::new()
+        // 主库完全没有这条编码的候选,但用户手工造过词 → 仍然给出手工词。
+        // (否则「造了词却打不出来」,是最难自查的失败模式。)
+        let out = self.with_sentence_head(Vec::new(), input, n_syll);
+        Self::splice_manual(out, &manual, 50)
+    }
+
+    /// 整句首选补齐(2026-11-25):保证「候选窗第一行」= 「空格上屏的那条」。
+    ///
+    /// 旧逻辑在**空格上屏那一刻**才用整句替换首选 → 候选窗显示的是词级首选,
+    /// 上屏的却是另一个串。用户实测 `sidegeer`:候选第 1 位显示「斯德哥尔摩」,
+    /// 按空格却上屏「死的戈尔」。现在把补齐提前到候选计算时,显示与上屏永远一致。
+    ///
+    /// 触发条件(保守,热路径几乎零开销):
+    ///   - 首选字数 < 输入音节数(词库没有覆盖整串,首选只是前缀/单字兼底);
+    ///   - 整句解码 字数 > 首选字数,且 ≤ 音节数(一字一音节的硬约束,挡掉乱解码);
+    ///   - 首选不是用户学成/手造词(权重 ≥ LEARN_PIN_WEIGHT 时不动,用户点过的位置优先)。
+    ///
+    /// 于是:
+    ///   - `sidegeer`(4 音节)首选「斯德哥尔摩」5 字 → 不补,空格就上屏它;
+    ///   - `jintiantianqi`(4 音节)首选「今天」2 字 → 补成「今天天气」,且第一行**显示**
+    ///     的就是「今天天气」,用户看得见再上屏。
+    fn with_sentence_head(
+        &self,
+        mut out: Vec<Candidate>,
+        input: &str,
+        n_syll: usize,
+    ) -> Vec<Candidate> {
+        if n_syll < 2 || input.len() < 4 {
+            return out;
+        }
+        let top_len = out.first().map(|c| c.0.chars().count()).unwrap_or(0);
+        if let Some(top) = out.first() {
+            if top.1 >= crate::db::LEARN_PIN_WEIGHT {
+                return out; // 学成词/手造词位置锁定,不让整句抢
+            }
+        }
+        if !out.is_empty() && top_len >= n_syll {
+            return out; // 首选已经覆盖了整串(含前缀命中的更长词),不打扰
+        }
+        // 只差一个音节时不必跑整句解码:用户下一个字母就会把词补全,
+        // 这里跑一次 beam search(~10ms)换来的多半是半成品句。短 2 个音节以上才补。
+        if !out.is_empty() && top_len + 2 > n_syll {
+            return out;
+        }
+        let Some(sent) = self.smart_sentence(input) else {
+            return out;
+        };
+        let n = sent.chars().count();
+        if n < 2 || n > n_syll || n <= top_len {
+            return out;
+        }
+        if out.is_empty() {
+            out.push((sent, 1));
+        } else {
+            out[0].0 = sent;
+        }
+        out
+    }
+
+    /// 把手造词按「第 N 位」插进候选序列(2026-11-24,借鉴影子输入法「快捷造词」)。
+    ///
+    /// 纯函数:不碰 DB、不重排已有候选,只做插位 —— 便于单测。
+    /// - `pos` 是 1 起的候选位;超出长度就落在末尾(再被 cap 截)。
+    /// - 同一个 pos 上有多条手工词时,按传入顺序依次占位,不会互相反序。
+    /// - 词若已存在于序列(主库本来就有),先摘掉再插,避免出现两条一样的候选。
+    fn splice_manual(mut out: Vec<Candidate>, manual: &[(String, i64)], cap: usize) -> Vec<Candidate> {
+        if manual.is_empty() {
+            out.truncate(cap);
+            return out;
+        }
+        for (word, _) in manual {
+            out.retain(|c| &c.0 != word);
+        }
+        // 同一 pos 已经插了几条 → 依次往后挪,保证同 pos 的顺序稳定。
+        let mut last_pos = i64::MIN;
+        let mut shift = 0usize;
+        for (word, pos) in manual {
+            let p = (*pos).max(1);
+            if p != last_pos {
+                last_pos = p;
+                shift = 0;
+            }
+            let idx = ((p - 1) as usize + shift).min(out.len());
+            out.insert(idx, (word.clone(), crate::db::LEARN_PIN_WEIGHT));
+            shift += 1;
+        }
+        out.truncate(cap);
+        out
     }
 
     /// 仅全拼 key / 单字全拼精确命中（不含 jp 简拼撞车）。
@@ -1162,6 +1282,10 @@ impl ImeEngine {
                     add(self.db.query_phrase_reverse_mixed(&first, rest, 15).unwrap_or_default());
                 }
             }
+            // 全拼头 + 尾部首字母(2026-11-25 新增):limancx = li man + c x。
+            // 这条形态此前按键路径完全没实现 —— 主词库的词打不出来,--add-word 却
+            // 提示「混拼都能命中」,属承诺与实现不一致。
+            add(self.query_phrase_abbrev_tail(inp));
         }
         // key 前缀:有 mem 走 trie(内存),无则 SQLite 范围查询
         if let Some(mem) = &self.mem {
@@ -1178,6 +1302,52 @@ impl ImeEngine {
         }
         let mut out: Vec<Candidate> = seen.into_iter().collect();
         // 同 query():加字典序决胜键,消除 HashMap 随机顺序导致的同权重漂移。
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        out.truncate(15);
+        out
+    }
+
+    /// 「全拼头 + 尾部首字母」混拼匹配(2026-11-25)。
+    ///
+    /// 把输入切成 `(head, tail)`:`head` 当词组 key 的前缀查库,`tail` 必须正好是
+    /// key 剩余部分**每个音节的首字母**(最后一个音节允许只打了前缀)。
+    ///   例:`limancx` → key=`limancaixiang`;head=`liman`,余下 `caixiang` → 首字母 `cx` ✓
+    ///       `yakebicx` → key=`yakebicaixiang`;head=`yakebic`,余下 `aixiang` → `ax` ✗
+    ///       `yakebicx` 再拆 head=`yakebi`,余下 `caixiang` → `cx` ✓
+    ///
+    /// 只走 SQLite(mem 索引的前缀桶只存 value/weight,没有 key 无法校验尾部);
+    /// 这是**增量通道**,查不到就返回空,不改变既有 4 条查询路径的任何行为。
+    fn query_phrase_abbrev_tail(&self, inp: &str) -> Vec<Candidate> {
+        if inp.len() < 4 || !inp.bytes().all(|b| b.is_ascii_lowercase()) {
+            return Vec::new();
+        }
+        let mut out: Vec<Candidate> = Vec::new();
+        let mut seen: HashMap<String, i64> = HashMap::new();
+        let mut queries = 0;
+        // head 从长到短:越长越具体,通常第一刀就命中。
+        // 上限 3 刀 + 收满 8 条即停,保证每次按键只多几次索引范围查询。
+        for head_len in (3..inp.len()).rev() {
+            let (head, tail) = inp.split_at(head_len);
+            if tail.is_empty() {
+                continue;
+            }
+            queries += 1;
+            if let Ok(rows) = self.db.query_phrase_with_key_prefix(head, 60) {
+                for (value, key, weight) in rows {
+                    if value.chars().count() < 2 || !key.starts_with(head) {
+                        continue;
+                    }
+                    let remainder = &key[head.len()..];
+                    if !remainder.is_empty() && crate::db::abbrev_prefix_match(&self.syll, remainder, tail) {
+                        upsert(&mut seen, value, weight);
+                    }
+                }
+            }
+            if seen.len() >= 8 || queries >= 3 {
+                break;
+            }
+        }
+        out.extend(seen);
         out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         out.truncate(15);
         out
@@ -1216,9 +1386,41 @@ impl ImeEngine {
         self.db.add_user_word(pinyin, word, 1).map_err(|e| e.to_string())
     }
 
+    /// 手工造词:按 `pos` 指定候选位(1 起)。语义见 `db::add_manual_word`。
+    pub fn user_add_pos(&self, pinyin: &str, word: &str, pos: i64) -> Result<(), String> {
+        self.db.add_manual_word(pinyin, word, pos).map_err(|e| e.to_string())
+    }
+
+    /// 中文词 → 自动编码(简拼:每音节首字母)。"北京大学" → "bjdx"。
+    ///
+    /// 快捷造词窗口和 Agent 批量入库都靠它 —— 用户只给中文,编码不用手打。
+    /// 逐字查主库 pinyin 单字表取最高权读音(与词库管理窗口的「拼音」栏同源)。
+    pub fn auto_code(&self, word: &str) -> Option<String> {
+        let full = self.db.pinyin_for_word(word)?;
+        Some(crate::db::CikuDb::to_jianpin(&full))
+    }
+
+    /// 中文词 → **全拼**。"北京大学" → "beijingdaxue";算不出来(生僻字)→ None。
+    ///
+    /// 造词时优先写全拼当主 key(简拼由 `add_manual_word` 自动补别名),
+    /// 这样全拼/简拼/混拼三种打法都能命中。
+    pub fn word_pinyin(&self, word: &str) -> Option<String> {
+        self.db.pinyin_for_word(word)
+    }
+
     /// 删除某条学习词,返回删除行数。
     pub fn user_remove(&self, pinyin: &str, word: &str) -> Result<usize, String> {
         self.db.remove_user_word(pinyin, word).map_err(|e| e.to_string())
+    }
+
+    /// 按词本身删除(无需知道编码)。用户清理误学词走这条。
+    pub fn user_remove_by_value(&self, word: &str) -> Result<usize, String> {
+        self.db.remove_user_word_by_value(word).map_err(|e| e.to_string())
+    }
+
+    /// 在用户词层搜索(子串,key/value 任一命中)。空串 = 最近学成的 N 条。
+    pub fn user_search(&self, term: &str, limit: usize) -> Vec<(String, String, i64)> {
+        self.db.search_user_words(term, limit)
     }
 
     /// 清空全部学习记录。
@@ -1263,5 +1465,166 @@ fn upsert(map: &mut HashMap<String, i64>, word: String, w: i64) {
         _ => {
             map.insert(word, w);
         }
+    }
+}
+
+#[cfg(test)]
+mod quick_add_tests {
+    //! 快捷造词「第 N 位」插位逻辑的纯函数测试(2026-11-24)。
+    //! 不碰 DB:证实插位语义本身,DB 侧行为由 db.rs 的用例覆盖。
+    use super::*;
+
+    fn cands(v: &[&str]) -> Vec<Candidate> {
+        v.iter().map(|s| (s.to_string(), 1)).collect()
+    }
+    fn words(v: &[Candidate]) -> Vec<String> {
+        v.iter().map(|c| c.0.clone()).collect()
+    }
+
+    #[test]
+    fn empty_manual_keeps_order_and_cap() {
+        let out = ImeEngine::splice_manual(cands(&["a", "b", "c"]), &[], 2);
+        assert_eq!(words(&out), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn pos_1_goes_first() {
+        let out = ImeEngine::splice_manual(cands(&["a", "b"]), &[("x".into(), 1)], 50);
+        assert_eq!(words(&out), vec!["x", "a", "b"]);
+    }
+
+    #[test]
+    fn pos_3_goes_third() {
+        let out = ImeEngine::splice_manual(cands(&["a", "b", "c", "d"]), &[("x".into(), 3)], 50);
+        assert_eq!(words(&out), vec!["a", "b", "x", "c", "d"]);
+    }
+
+    #[test]
+    fn pos_beyond_len_lands_at_tail() {
+        let out = ImeEngine::splice_manual(cands(&["a", "b"]), &[("x".into(), 99)], 50);
+        assert_eq!(words(&out), vec!["a", "b", "x"]);
+    }
+
+    #[test]
+    fn same_pos_keeps_input_order() {
+        let out = ImeEngine::splice_manual(
+            cands(&["a", "b"]),
+            &[("x".into(), 2), ("y".into(), 2)],
+            50,
+        );
+        assert_eq!(words(&out), vec!["a", "x", "y", "b"]);
+    }
+
+    #[test]
+    fn existing_word_is_moved_not_duplicated() {
+        // 主库本来就有这条候选 → 摘掉后按 pos 重新插,不能出现两条一样的词。
+        let out = ImeEngine::splice_manual(cands(&["a", "x", "b"]), &[("x".into(), 1)], 50);
+        assert_eq!(words(&out), vec!["x", "a", "b"]);
+        assert_eq!(out.iter().filter(|c| c.0 == "x").count(), 1);
+    }
+
+    #[test]
+    fn cap_still_enforced_after_insert() {
+        let out = ImeEngine::splice_manual(cands(&["a", "b", "c"]), &[("x".into(), 1)], 3);
+        assert_eq!(words(&out), vec!["x", "a", "b"]);
+        assert!(out.len() <= 3);
+    }
+
+    #[test]
+    fn manual_only_code_still_yields_candidate() {
+        // 主库一个候选都没有(编码是自造词独有)→ 手工词必须能打出来。
+        let out = ImeEngine::splice_manual(Vec::new(), &[("独家词".into(), 1)], 50);
+        assert_eq!(words(&out), vec!["独家词"]);
+    }
+}
+
+#[cfg(test)]
+mod mixed_tail_tests {
+    //! 「全拼头 + 尾部首字母」混拼(2026-11-25 修)。
+    //!
+    //! 用户实测:造词提示「全拼/简拼/混拼都能命中」,但 `limancx` 在真实按键路径上
+    //! 既没有候选、又被中英判定当成英文原样上屏。这里用最小词库复现并锁住:
+    //!   - `query()` 必须给出多字词(候选第 1 位就是空格会上的那条);
+    //!   - `classify_input()` 必须判拼音(否则 IME 会把候选换成原样字母)。
+    use super::*;
+    use rusqlite::Connection;
+
+    fn engine_with(rows: &[(&str, &str, &str, i64)]) -> (ImeEngine, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "prisir_mixtail_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("ciku.db");
+        {
+            let c = Connection::open(&main).unwrap();
+            c.execute_batch(
+                "CREATE TABLE phrase(jp TEXT, key TEXT, value TEXT, weight INTEGER);
+                 CREATE INDEX idx_phrase_key ON phrase(key);
+                 CREATE INDEX idx_phrase_jp ON phrase(jp);
+                 CREATE TABLE pinyin(jp TEXT, key TEXT, value TEXT, weight INTEGER);",
+            )
+            .unwrap();
+            for (jp, key, value, weight) in rows {
+                c.execute(
+                    "INSERT INTO phrase(jp,key,value,weight) VALUES(?1,?2,?3,?4)",
+                    rusqlite::params![jp, key, value, weight],
+                )
+                .unwrap();
+            }
+        }
+        let e = ImeEngine::new(main.to_str().unwrap()).expect("open fixture db");
+        (e, dir)
+    }
+
+    fn fixture() -> (ImeEngine, std::path::PathBuf) {
+        engine_with(&[
+            ("lmcx", "limancaixiang", "黎曼猜想", 9000),
+            ("ykbcx", "yakebicaixiang", "雅可比猜想", 8000),
+            ("sx", "shuxue", "数学", 500_000),
+        ])
+    }
+
+    #[test]
+    fn full_head_plus_initials_tail_hits_phrase() {
+        let (e, dir) = fixture();
+        let got = e.query("limancx");
+        assert_eq!(
+            got.first().map(|c| c.0.as_str()),
+            Some("黎曼猜想"),
+            "全拼头(liman)+ 尾部首字母(cx)必须命中,实际 {:?}",
+            got.iter().take(5).map(|c| c.0.clone()).collect::<Vec<_>>()
+        );
+        assert!(e.classify_input("limancx") == crate::lang::LangKind::Pinyin,
+            "混拼命中时不能判成英文(判英文会把候选换成原样字母)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mixed_tail_works_for_every_split() {
+        let (e, dir) = fixture();
+        // 前全拼后简拼 / 全简拼 / 全拼 三种打法都要出同一个词
+        for input in ["yakebicx", "ykbcx", "yakebicaixiang"] {
+            let got = e.query(input);
+            assert_eq!(
+                got.first().map(|c| c.0.as_str()),
+                Some("雅可比猜想"),
+                "{} 应命中雅可比猜想,实际 {:?}",
+                input,
+                got.iter().take(5).map(|c| c.0.clone()).collect::<Vec<_>>()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plain_full_pinyin_word_keeps_its_head() {
+        let (e, dir) = fixture();
+        assert_eq!(e.query("shuxue").first().map(|c| c.0.as_str()), Some("数学"));
+        // 前缀输入仍应出整词(key 前缀通道不受新逻辑影响)
+        assert_eq!(e.query("shuxu").first().map(|c| c.0.as_str()), Some("数学"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

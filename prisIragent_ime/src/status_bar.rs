@@ -1,7 +1,9 @@
 //! 可拖动多功能工具条 — 对标搜狗输入法悬浮栏形态。
 //!
 //! **布局**(自左到右,单像素分隔):
-//!   [图标(点击=菜单)] [中/英] [。/.(标点)] [写(手写)] [符(符号大全)] [词(词库)]
+//!   [图标(点击=菜单)] [中/英] [。/.(标点)] [符] [😀] [写] [词] [简/繁] [语(语音听写)]
+//!
+//! 插件(plugins.json 声明的 AI 等)追加在「语」右侧。
 //!
 //! **拖动(2026-09-01 搜狗对标)**: 整栏任意位置都能拖动。实现 = WM_NCHITTEST 对
 //! 非按钮区返回 HTCAPTION(系统接管拖动,最稳);按钮区返回 HTCLIENT 交给我们自绘
@@ -50,6 +52,11 @@ const ICON_W: i32 = 34;
 /// 每个功能按钮宽。
 const BTN_W: i32 = 38;
 /// 功能按钮数量(中/英, 标点, 符, emoji, 写, 词, 简繁, 语)。
+// 内置 8 按钮(2026-11-25):语音听写**回到内置栏**。
+// 之前改成纯 plugins.json 插件后,一旦用户机器的 plugins.json 丢失/被旧版覆盖,
+// 悬浮栏就没有「语」、菜单也没有「语音听写」—— 用户直接反映「语音输入被弄丢了」。
+// 现在内置按钮兜底(仍走进程外插件的事件 toggle / 拉起 exe),插件机制的「动态追加」
+// 只留给语音以外的插件(AI 等),voice 插件不再重复追加,避免出现两个「语」。
 const N_BTNS: i32 = 8;
 /// 内置区总宽(图标 + N_BTNS 内置按钮)。保持编译期常量 → 创建/命中/默认位置/圆角零回归。
 const BAR_W: i32 = ICON_W + BTN_W * N_BTNS;
@@ -61,14 +68,13 @@ const BAR_W: i32 = ICON_W + BTN_W * N_BTNS;
 static PLUGIN_BTNS: Mutex<Option<Vec<crate::plugin::PluginSpec>>> = Mutex::new(None);
 
 /// 刷新插件按钮缓存(显示状态栏前调一次)。返回按钮数。
-///
-/// 跳过 `voice`：内置第 8 格已是「语」(BTN_VOICE)。plugins.json 再声明
-/// button="语" 会在栏右侧再画一格，出现双「语」。
 fn refresh_plugin_buttons() -> i32 {
+    // voice 已回归内置「语」按钮(2026-11-25),这里从动态插件里排除:
+    // 否则 plugins.json 声明了 voice 时会同时出现内置「语」和插件「语」。
     let btns: Vec<crate::plugin::PluginSpec> = crate::plugin::available_plugins()
         .into_iter()
         .filter(|p| p.button.is_some())
-        .filter(|p| p.id != "voice")
+        .filter(|p| p.id != crate::plugin::VOICE_PLUGIN_ID)
         .collect();
     let n = btns.len() as i32;
     *PLUGIN_BTNS.lock().unwrap() = Some(btns);
@@ -95,7 +101,8 @@ const BTN_EMOJI: i32 = 3;  // 😀(emoji 面板)
 const BTN_HAND: i32 = 4;   // 写(手写,兜底刚需)
 const BTN_VOCAB: i32 = 5;  // 词(词库)
 const BTN_SCRIPT: i32 = 6; // 简/繁(简繁输出切换,P2 2026-11-17)
-const BTN_VOICE: i32 = 7;  // 语(语音听写,启动 voice\lingxi_voice.exe)
+const BTN_VOICE: i32 = 7;  // 语(语音听写,2026-11-25 回归内置栏;触发走插件事件/拉起 exe)
+// 其余插件(如 AI)仍由 plugins.json 声明,追加在内置按钮右侧。
 // 栏位可勾选(搜狗式菜单打钩)排后续;当前默认全显。
 
 /// 本 DLL 内嵌主图标资源 ID(winres set_icon 第一个 = IDI_ICON 1)。
@@ -109,13 +116,17 @@ const IDM_SYM: u32 = 1004;
 const IDM_VOCAB: u32 = 1005;
 const IDM_EMOJI: u32 = 1006;
 const IDM_SCRIPT: u32 = 1007;  // 简繁输出(二态 简/繁,对齐安卓端)
-const IDM_VOICE: u32 = 1015; // 语音听写(固定入口,不依赖 plugins.json 动态项)
-// 关于分栏：关于 / 隐私政策 / 使用条款 / 开放 API / 问题反馈。
+/// 语音听写(2026-11-25 回归内置菜单项;plugins.json 丢失时也能用)。
+const IDM_VOICE: u32 = 1008;
+// 说明分栏(2026-11-25 对齐 Linux prisir_about / Android AboutCopy；AGPL-3.0)。
 const IDM_ABOUT: u32 = 1010;
+const IDM_HELP: u32 = 1016;
 const IDM_PRIVACY: u32 = 1011;
 const IDM_TERMS: u32 = 1012;
-const IDM_OPENAPI: u32 = 1013;
-const IDM_FEEDBACK: u32 = 1014; // 问题反馈：诊断 zip + 打开论坛
+const IDM_OPENAPI: u32 = 1017;  // 开放 API 设置窗（开关+端口）
+const IDM_FEEDBACK: u32 = 1014; // 问题反馈（正文 + 打包诊断/开论坛，合并原两栏）
+/// 造词(加入词库)—— 2026-11-25 用户要求「热键冲突时也能用」:菜单入口与热键等价。
+const IDM_WORD_ADD: u32 = 1015;
 /// 插件菜单项 ID 基值:第 N 个已安装插件 = IDM_PLUGIN_BASE + N。
 const IDM_PLUGIN_BASE: u32 = 2000;
 
@@ -543,7 +554,24 @@ fn script_menu_label(mode: i32) -> &'static str {
     }
 }
 
-// 语音听写：plugins.json 声明为进程外插件，走 crate::plugin::trigger_plugin。
+// ── 语音听写(2026-11-25:回归内置入口)──────────────────────────────────────
+// 历史:2026-09 把语音改成纯 plugins.json 插件,结果 plugins.json 一旦缺失
+// (旧版安装包覆盖、用户手改坏、LOCALAPPDATA 被清理),悬浮栏和菜单就都没有语音入口。
+// 现在「语」按钮 + 菜单「语音听写」都是内置的,触发仍走进程外插件:
+//   - 插件进程在跑 → SetEvent(PrisirLingXi_VoiceToggle_Event) 切开始/停止;
+//   - 没在跑 → ShellExecute 拉起 lingxi_voice.exe(见 plugin::trigger_voice)。
+// exe 真找不到时给一句明确提示,不再是「点了没反应」。
+fn trigger_voice() {
+    if crate::plugin::trigger_voice() {
+        return;
+    }
+    crate::about_window::show_dynamic(
+        "语音听写不可用",
+        "没有找到语音插件 lingxi_voice.exe。\n\n\
+         正常安装位置:\n  C:\\Program Files\\PrisirIME\\voice\\lingxi_voice.exe\n\n\
+         重装灵犀拼音输入法即可恢复(语音模型随安装包一起安装)。",
+    );
+}
 
 // ── 按钮行为 ────────────────────────────────────────────────────────────────
 fn on_button(hwnd: HWND, idx: i32) {
@@ -555,7 +583,7 @@ fn on_button(hwnd: HWND, idx: i32) {
         BTN_HAND => crate::handwriting_panel::toggle_panel(Some(hwnd)),
         BTN_VOCAB => crate::userdict_window::toggle(),
         BTN_SCRIPT => toggle_script(),
-        BTN_VOICE => crate::plugin::trigger_plugin("voice"),
+        BTN_VOICE => trigger_voice(),
         _ => {}
     }
     let _ = hwnd;
@@ -590,8 +618,20 @@ fn show_menu(hwnd: HWND) {
         let sym_label: Vec<u16> = "符号大全".encode_utf16().chain(std::iter::once(0)).collect();
         let emoji_label: Vec<u16> = "Emoji 表情".encode_utf16().chain(std::iter::once(0)).collect();
         let vocab_label: Vec<u16> = "词库管理".encode_utf16().chain(std::iter::once(0)).collect();
-        let voice_label: Vec<u16> = "语音听写 (语)".encode_utf16().chain(std::iter::once(0)).collect();
+        // 「造词」紧贴词库管理:同一个用户心智(往词库里加东西),热键被抢时这是唯一入口。
+        // 标签右侧带当前热键,关掉热键时不显示(不写死 Ctrl+Alt+E)。
+        let word_add_label: Vec<u16> = {
+            let hk = crate::hotkey::load_quick_add();
+            let text = if hk.enabled {
+                format!("造词(加入词库)\t{}", hk.describe())
+            } else {
+                "造词(加入词库)".to_string()
+            };
+            text.encode_utf16().chain(std::iter::once(0)).collect()
+        };
+        // 说明栏对齐 Linux：关于/隐私/条款/开放API/问题反馈；Win 另加「使用说明」
         let about_label: Vec<u16> = "关于".encode_utf16().chain(std::iter::once(0)).collect();
+        let help_label: Vec<u16> = "使用说明".encode_utf16().chain(std::iter::once(0)).collect();
         let privacy_label: Vec<u16> = "隐私政策".encode_utf16().chain(std::iter::once(0)).collect();
         let terms_label: Vec<u16> = "使用条款".encode_utf16().chain(std::iter::once(0)).collect();
         let openapi_label: Vec<u16> = "开放 API".encode_utf16().chain(std::iter::once(0)).collect();
@@ -606,15 +646,19 @@ fn show_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, IDM_SYM as usize, PCWSTR(sym_label.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, IDM_EMOJI as usize, PCWSTR(emoji_label.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, IDM_VOCAB as usize, PCWSTR(vocab_label.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_WORD_ADD as usize, PCWSTR(word_add_label.as_ptr()));
+        let voice_label: Vec<u16> = "语音听写".encode_utf16().chain(std::iter::once(0)).collect();
         let _ = AppendMenuW(menu, MF_STRING, IDM_VOICE as usize, PCWSTR(voice_label.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_ABOUT as usize, PCWSTR(about_label.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_HELP as usize, PCWSTR(help_label.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, IDM_PRIVACY as usize, PCWSTR(privacy_label.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, IDM_TERMS as usize, PCWSTR(terms_label.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, IDM_OPENAPI as usize, PCWSTR(openapi_label.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, IDM_FEEDBACK as usize, PCWSTR(feedback_label.as_ptr()));
 
         // 插件菜单项:与悬浮栏按钮同一数据源(PLUGIN_BTNS 缓存),避免两处不一致。
+        // 注:voice 已在 refresh_plugin_buttons() 里排除(内置「语」),缓存里不会有它。
         let dyn_plugins: Vec<crate::plugin::PluginSpec> = PLUGIN_BTNS.lock().unwrap()
             .as_ref().cloned().unwrap_or_default();
         if !dyn_plugins.is_empty() {
@@ -653,12 +697,17 @@ fn show_menu(hwnd: HWND) {
             IDM_SYM => crate::panels::toggle_panel(crate::panels::PanelKind::Symbols, Some(hwnd)),
             IDM_EMOJI => crate::panels::toggle_panel(crate::panels::PanelKind::Emoji, Some(hwnd)),
             IDM_VOCAB => crate::userdict_window::toggle(),
-            IDM_VOICE => crate::plugin::trigger_plugin("voice"),
+            // 语音听写(内置入口;事件 toggle / 拉起 exe 见 trigger_voice)。
+            IDM_VOICE => trigger_voice(),
+            // 造词:与热键同一条路径。菜单是热键被抢/关掉时的可靠入口(2026-11-25)。
+            IDM_WORD_ADD => crate::quick_add_window::open_with_hint(""),
             IDM_ABOUT => crate::about_window::show("about"),
+            IDM_HELP => crate::about_window::show("help"),
             IDM_PRIVACY => crate::about_window::show("privacy"),
             IDM_TERMS => crate::about_window::show("terms"),
-            IDM_OPENAPI => crate::about_window::show("openapi"),
-            IDM_FEEDBACK => crate::feedback::feedback_and_open(),
+            IDM_OPENAPI => crate::openapi_window::show(),
+            // 合并：展示反馈正文，窗内可「打开论坛 / 打包诊断」
+            IDM_FEEDBACK => crate::about_window::show("feedback"),
             c if c >= IDM_PLUGIN_BASE => {
                 // 插件菜单项:索引 = c - IDM_PLUGIN_BASE → 用 PLUGIN_BTNS 缓存查 id → trigger。
                 let idx = (c - IDM_PLUGIN_BASE) as usize;
@@ -1031,6 +1080,7 @@ fn paint_bar(hwnd: HWND) {
             // P2 简繁:显示当前输出字形。简→繁 出「繁」并高亮;其余出「简」。
             (if script_mode == 1 { "繁" } else { "简" },
              if script_mode == 0 { BAR_COL_TEXT } else { BAR_COL_ACCENT }),
+            // 语音听写(2026-11-25 回归内置栏)。录音中不做状态回显(状态在语音插件进程里)。
             ("语", BAR_COL_TEXT),
         ];
         // emoji 格(BTN_EMOJI)留给 D2D 画彩色,GDI 跳过不画单色轮廓。

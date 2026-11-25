@@ -106,64 +106,35 @@ fi
 # VERSION.txt(单一来源, 跟随安装包走)
 cp -f "${VERSION_FILE}" "${STAGE_DIR}/VERSION.txt"
 
-# 说明页 markdown（关于 / 隐私政策 / 使用条款 / 开放 API / 问题反馈）
+# 4 段关于页 markdown(给用户直接读的文本, 对齐 Android 端 4 段正文)
 cat > "${STAGE_DIR}/ABOUT.md" <<'ABOUT_EOF'
 # 灵犀拼音输入法 for Windows — 关于
 
-灵犀拼音输入法（Windows）由 BabelSpan · Prisir（湃睿思）提供。
+灵犀拼音输入法 for Windows 是 Prisir(湃睿思) AI 出品的用户隐私保护软件,
+纯本地运行,不强制联网,没有账号体系,支持用户百分百管理自己词库,
+根据使用词频自动跳第一页显示,方便快捷录入。
 
-产品定位：面向个人与专业场景的本地中文输入工具。核心能力包括拼音/混拼候选、整句解码、简繁输出、本地词库与用户词典管理，以及可选的语音听写插件。输入链路在本机完成，不依赖账号体系，也不以云端联想为默认能力。
+## 隐私说明
 
-若需借助 AI Agent 按个人习惯定制输入法（词库、模式、查询等），请参阅「开放 API」：默认关闭，按需开启后仅对本机回环地址开放。
-
-官网与下载：https://www.babelspan.com/
-
-版权所有 © 2026 BabelSpan。本软件依据 Apache License, Version 2.0 授权，按「原样」提供，不附带任何担保或条件。完整授权见安装目录 LICENSE.txt（Apache License 2.0）。
-
-## 隐私政策
-
-灵犀拼音采用严格的隐私保护设计，完全离线无账号运行：
-
-- 键入内容、候选结果与词库数据保存在本机，不向第三方上传输入正文。
-- 不提供账号登录，不做行为画像，不出售或交换个人输入数据。
-- 用户可通过词库管理与本地学习记录自主维护本地词典。
-- 可选的语音听写在本机完成识别，不外发音频。
-- 开放 API 默认关闭；开启后也仅监听本机 127.0.0.1，不对外网暴露。
-
-输入法本身不主动发起任何网络请求。
+灵犀拼音输入法 for Windows 是 Prisir(湃睿思) AI 出品的用户隐私保护软件,
+纯本地运行,不强制联网,支持用户百分百管理自己词库,
+不收集遥测,不做行为分析,不设账号。
 
 ## 使用条款
 
-使用本软件即表示您知悉并同意以下约定：
+灵犀拼音输入法 for Windows 是 Prisir(湃睿思) AI 出品的用户隐私保护软件,
+本软件的轻量条款核心是「本地工具,自负其责」,
+使用本输入法即视为同意:词库存本机,不外发。
 
-- 本软件为本地工具，安装、配置与使用风险由用户自行承担。
-- 请仅将本软件用于合法用途；请勿用于干扰系统安全或侵犯他人权益的场景。
-- 词库与学习数据归用户本地管理；卸载前请自行备份需要保留的用户词典。
-- 软件可能通过官网发布更新；是否安装更新由用户决定。
+## 反馈联系
 
-完整法律文本以安装目录 LICENSE.txt（Apache License, Version 2.0）为准。官网：https://www.babelspan.com/
+反馈邮件: lsjdlijie@outlook.com
+(主题请加 [灵犀输入法] 前缀, 我们会在 1-3 个工作日内回信。
+反馈请附带: Win 版本号 (`prisir_tsfsvc --version` 输出)、触发场景的复现步骤、必要的截图/记事本。)
 
-## 开放 API
+---
 
-开放 API 面向「用 AI 帮助用户定制个性化输入法」的场景：本机 Agent / 脚本可通过本地接口查询状态、调整配置、访问词库相关能力，从而按个人习惯协助设置输入法。
-
-默认关闭。需要 Agent 接入时，先开启：
-
-```cmd
-prisir_tsfsvc --open-api-config enable
-```
-
-开启后仅监听本机 127.0.0.1（默认端口 23331），不对外网开放。配置文件：`%LOCALAPPDATA%\Prisir\IME\open_api.json`。
-
-常用端点：`GET /health` · `GET /status` · `POST /rpc`（JSON-RPC）。
-
-## 问题反馈
-
-如需报告缺陷或提出改进建议，请通过 BabelSpan 论坛提交：
-
-https://bbs.babelspan.com/forum.html#board=browser/ime&hint=prisirai
-
-建议说明：Windows 版本与灵犀版本号、复现步骤、期望与实际结果。
+更详细的安装 + 真端到端验证步骤见 `INSTALL.md`。
 ABOUT_EOF
 
 # 安装步骤(沿用 .tmp_p3j_t9_install/PrisirIME_v0.7.0/INSTALL.md,版本号改对齐)
@@ -181,7 +152,7 @@ ${ZIP_BASENAME}/
 │   ├── ciku.db             162 MB, 词库 (SQLite)
 │   └── ciku.idx            214 MB, 索引 (拼音声母 → 词条)
 ├── VERSION.txt             版本号单一来源
-├── ABOUT.md                关于/隐私政策/使用条款/问题反馈
+├── ABOUT.md                关于/隐私/条款/反馈联系 (对齐 Android 端)
 └── INSTALL.md              本文件
 \`\`\`
 

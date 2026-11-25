@@ -1,6 +1,11 @@
-//! 关于 / 隐私政策 / 使用条款 / 开放 API 展示窗。
+//! 关于/使用说明/隐私/条款/开放API/问题反馈 展示窗(2026-09-04；2026-11-25 文案对齐 Linux)。
 //!
-//! 开放 API 页：正文可滚；底部状态单独一行；启用/关闭；端口输入框 + 应用按钮。
+//! **定位**:状态栏菜单点对应项弹出,显示 about.rs 正文。只读展示。
+//!
+//! **形态**:苹果风自绘(暖白底/雅黑),居中。正文自动换行。问题反馈页附「打开论坛」按钮。
+//!
+//! **崩溃预防(2026-09-04 词库窗教训)**:所有 DrawTextW 文本走 wcs() 补 `\0` 结尾,
+//! windows-rs 0.58 对 `&mut Vec<u16>` 按 C 字符串(-1)处理,无 null 结尾越界读带崩宿主。
 
 use std::sync::{Arc, Mutex, OnceLock};
 use windows::core::*;
@@ -13,35 +18,27 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const WIN_CLASS: &str = "PrisirAboutWin";
 const WIN_W: i32 = 560;
-const WIN_H: i32 = 480;
-const WIN_W_OPENAPI: i32 = 640;
-const WIN_H_OPENAPI: i32 = 580;
+/// 正文偏长时原先 460 裁掉末行；再加一行高（约 24px）。
+const WIN_H: i32 = 484;
 const MARGIN: i32 = 20;
 
-const IDC_PORT_EDIT: i32 = 4001;
-const IDC_PORT_APPLY: i32 = 4002;
-const IDC_ENABLE: i32 = 4003;
-const IDC_DISABLE: i32 = 4004;
-
+// 苹果风配色(BGR 0x00BBGGRR),与状态栏/词库窗一致。
 const COL_BG: u32 = 0x00FAF9F7;
 const COL_TITLE: u32 = 0x00333333;
 const COL_TEXT: u32 = 0x005A544D;
 const COL_ACCENT: u32 = 0x00A9750A;
 const COL_BTN: u32 = 0x00EFECE7;
 
+/// UTF-16 buffer 带 null 结尾(防 DrawTextW 越界,见 userdict_window.rs 教训)。
 fn wcs(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 struct AboutState {
     hwnd: Option<HWND>,
-    key: String,
-    dynamic_body: String,
-    scroll_y: i32,
-    hwnd_port_edit: Option<HWND>,
-    hwnd_port_apply: Option<HWND>,
-    hwnd_enable: Option<HWND>,
-    hwnd_disable: Option<HWND>,
+    key: String,           // about | help | privacy | terms | openapi | contact | feedback | dynamic
+    dynamic_body: String,  // key=="dynamic" 时的正文
+    dynamic_title: String, // key=="dynamic" 时的标题
 }
 static ABOUT_STATE: OnceLock<Arc<Mutex<AboutState>>> = OnceLock::new();
 unsafe impl Send for AboutState {}
@@ -54,11 +51,7 @@ fn state() -> Arc<Mutex<AboutState>> {
                 hwnd: None,
                 key: "about".into(),
                 dynamic_body: String::new(),
-                scroll_y: 0,
-                hwnd_port_edit: None,
-                hwnd_port_apply: None,
-                hwnd_enable: None,
-                hwnd_disable: None,
+                dynamic_title: String::new(),
             }))
         })
         .clone()
@@ -87,51 +80,39 @@ fn register_class() -> Result<()> {
     Ok(())
 }
 
+/// 打开/聚焦 关于窗。key: help|about|privacy|terms|openapi|feedback|contact。
 pub(crate) fn show(key: &str) {
     let (title, body) = crate::about::lookup(key).unwrap_or(("关于", crate::about::ABOUT_BODY));
-    open_window(&title, body, false, key.to_string())
+    let key_owned = key.to_string();
+    open_window(&title, body, false, key_owned)
 }
 
+/// 打开/聚焦 动态内容窗(任意提示文本,带「复制文本」按钮)。
 pub(crate) fn show_dynamic(title: &str, body: &str) {
     open_window(title, body, true, "dynamic".into())
 }
 
-fn destroy_openapi_controls(s: &mut AboutState) {
-    for h in [
-        s.hwnd_port_edit.take(),
-        s.hwnd_port_apply.take(),
-        s.hwnd_enable.take(),
-        s.hwnd_disable.take(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        unsafe {
-            let _ = DestroyWindow(h);
-        }
-    }
+fn needs_action_btn(key: &str) -> bool {
+    matches!(key, "contact" | "feedback" | "dynamic")
 }
 
+fn is_feedback_key(key: &str) -> bool {
+    matches!(key, "contact" | "feedback")
+}
+
+/// 公共开窗逻辑。
 fn open_window(title: &str, body: &str, dynamic: bool, key: String) {
     let st = state();
     {
         let mut s = st.lock().unwrap();
-        s.key = key.clone();
+        s.key = key;
         s.dynamic_body = body.to_string();
-        s.scroll_y = 0;
+        s.dynamic_title = title.to_string();
         if let Some(h) = s.hwnd {
             if unsafe { IsWindow(h) }.as_bool() {
                 unsafe {
                     let _ = SetWindowTextW(h, PCWSTR(wcs(title).as_ptr()));
                     let _ = SetForegroundWindow(h);
-                }
-                if key == "openapi" {
-                    ensure_openapi_controls(h, &mut s);
-                    layout_openapi_controls(h, &s);
-                } else {
-                    destroy_openapi_controls(&mut s);
-                }
-                unsafe {
                     let _ = InvalidateRect(h, None, true);
                 }
                 return;
@@ -145,25 +126,20 @@ fn open_window(title: &str, body: &str, dynamic: bool, key: String) {
     let hinst = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
     let cn = wcs(WIN_CLASS);
     let ti = wcs(title);
-    let (ww, wh) = if key == "openapi" {
-        (WIN_W_OPENAPI, WIN_H_OPENAPI)
-    } else {
-        (WIN_W, WIN_H)
-    };
     let sw = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let sh = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    let x = (sw - ww) / 2;
-    let y = (sh - wh) / 2;
+    let x = (sw - WIN_W) / 2;
+    let y = (sh - WIN_H) / 2;
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_TOPMOST,
             PCWSTR(cn.as_ptr()),
             PCWSTR(ti.as_ptr()),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
             x,
             y,
-            ww,
-            wh,
+            WIN_W,
+            WIN_H,
             None,
             None,
             hinst,
@@ -171,185 +147,13 @@ fn open_window(title: &str, body: &str, dynamic: bool, key: String) {
         )
     };
     if let Ok(h) = hwnd {
-        {
-            let mut s = st.lock().unwrap();
-            s.hwnd = Some(h);
-            if key == "openapi" {
-                ensure_openapi_controls(h, &mut s);
-                layout_openapi_controls(h, &s);
-            }
-        }
+        st.lock().unwrap().hwnd = Some(h);
         unsafe {
             let _ = ShowWindow(h, SW_SHOW);
             let _ = UpdateWindow(h);
         }
     }
     let _ = dynamic;
-}
-
-fn client_size(hwnd: HWND) -> (i32, i32) {
-    let mut rc = RECT::default();
-    unsafe {
-        let _ = GetClientRect(hwnd, &mut rc);
-    }
-    (rc.right - rc.left, rc.bottom - rc.top)
-}
-
-/// 开放 API 底部：状态行 + 启用行 + 端口行；其它页仅操作按钮。
-fn footer_height(key: &str) -> i32 {
-    if key == "openapi" {
-        168
-    } else if has_action_btn(key) {
-        90
-    } else {
-        24
-    }
-}
-
-fn btn_rect_at(client_h: i32) -> RECT {
-    RECT {
-        left: MARGIN,
-        top: client_h - 54,
-        right: MARGIN + 160,
-        bottom: client_h - 20,
-    }
-}
-
-fn ensure_openapi_controls(parent: HWND, s: &mut AboutState) {
-    if s.hwnd_port_edit.is_some() {
-        return;
-    }
-    let hinst = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
-    let cfg = crate::open_api::load_config();
-    unsafe {
-        let btn = wcs("BUTTON");
-        let edit = wcs("EDIT");
-        let en = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            PCWSTR(btn.as_ptr()),
-            PCWSTR(wcs("启用").as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            0,
-            0,
-            100,
-            32,
-            parent,
-            HMENU(IDC_ENABLE as *mut _),
-            hinst,
-            None,
-        )
-        .ok();
-        let dis = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            PCWSTR(btn.as_ptr()),
-            PCWSTR(wcs("关闭").as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            0,
-            0,
-            100,
-            32,
-            parent,
-            HMENU(IDC_DISABLE as *mut _),
-            hinst,
-            None,
-        )
-        .ok();
-        let ed = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            PCWSTR(edit.as_ptr()),
-            PCWSTR(wcs(&cfg.port.to_string()).as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_NUMBER as u32 | ES_LEFT as u32),
-            0,
-            0,
-            100,
-            28,
-            parent,
-            HMENU(IDC_PORT_EDIT as *mut _),
-            hinst,
-            None,
-        )
-        .ok();
-        let ap = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            PCWSTR(btn.as_ptr()),
-            PCWSTR(wcs("应用").as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            0,
-            0,
-            80,
-            32,
-            parent,
-            HMENU(IDC_PORT_APPLY as *mut _),
-            hinst,
-            None,
-        )
-        .ok();
-        s.hwnd_enable = en;
-        s.hwnd_disable = dis;
-        s.hwnd_port_edit = ed;
-        s.hwnd_port_apply = ap;
-    }
-}
-
-fn layout_openapi_controls(parent: HWND, s: &AboutState) {
-    let (_cw, ch) = client_size(parent);
-    // 自下而上留白：应用行 → 启用行 → 状态文字（paint）
-    let y_port = ch - 52;
-    let y_en = ch - 100;
-    unsafe {
-        if let Some(h) = s.hwnd_enable {
-            let _ = SetWindowPos(h, HWND::default(), MARGIN, y_en, 100, 32, SWP_NOZORDER);
-        }
-        if let Some(h) = s.hwnd_disable {
-            let _ = SetWindowPos(h, HWND::default(), MARGIN + 112, y_en, 100, 32, SWP_NOZORDER);
-        }
-        if let Some(h) = s.hwnd_port_edit {
-            let _ = SetWindowPos(h, HWND::default(), MARGIN + 56, y_port, 120, 28, SWP_NOZORDER);
-        }
-        if let Some(h) = s.hwnd_port_apply {
-            let _ = SetWindowPos(h, HWND::default(), MARGIN + 186, y_port, 80, 32, SWP_NOZORDER);
-        }
-    }
-}
-
-fn read_edit_text(hwnd: HWND) -> String {
-    unsafe {
-        let len = GetWindowTextLengthW(hwnd);
-        if len <= 0 {
-            return String::new();
-        }
-        let mut buf = vec![0u16; (len + 1) as usize];
-        let n = GetWindowTextW(hwnd, &mut buf);
-        if n <= 0 {
-            return String::new();
-        }
-        String::from_utf16_lossy(&buf[..n as usize])
-    }
-}
-
-fn apply_port_from_edit() -> std::result::Result<(), String> {
-    let st = state();
-    let edit = st
-        .lock()
-        .unwrap()
-        .hwnd_port_edit
-        .ok_or_else(|| "无端口输入框".to_string())?;
-    let text = read_edit_text(edit);
-    let port: u16 = text
-        .trim()
-        .parse()
-        .map_err(|_| "端口须为 1–65535 的数字".to_string())?;
-    if port == 0 {
-        return Err("端口须为 1–65535".into());
-    }
-    let mut cfg = crate::open_api::load_config();
-    cfg.port = port;
-    crate::open_api::save_config(&cfg).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn point_in(r: &RECT, cx: i32, cy: i32) -> bool {
-    cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom
 }
 
 unsafe extern "system" fn about_wnd_proc(
@@ -363,65 +167,12 @@ unsafe extern "system" fn about_wnd_proc(
             paint(hwnd);
             LRESULT(0)
         }
-        WM_SIZE => {
-            let st = state();
-            let s = st.lock().unwrap();
-            if s.key == "openapi" {
-                layout_openapi_controls(hwnd, &s);
-            }
-            drop(s);
-            let _ = InvalidateRect(hwnd, None, true);
-            LRESULT(0)
-        }
-        WM_MOUSEWHEEL => {
-            let delta = ((wparam.0 >> 16) as i16) as i32;
-            let st = state();
-            let mut s = st.lock().unwrap();
-            s.scroll_y = (s.scroll_y - delta / 4).max(0);
-            drop(s);
-            let _ = InvalidateRect(hwnd, None, true);
-            LRESULT(0)
-        }
-        WM_COMMAND => {
-            let id = (wparam.0 & 0xFFFF) as i32;
-            match id {
-                IDC_ENABLE => {
-                    let mut cfg = crate::open_api::load_config();
-                    cfg.enabled = true;
-                    let _ = crate::open_api::save_config(&cfg);
-                    let _ = InvalidateRect(hwnd, None, true);
-                }
-                IDC_DISABLE => {
-                    let mut cfg = crate::open_api::load_config();
-                    cfg.enabled = false;
-                    let _ = crate::open_api::save_config(&cfg);
-                    let _ = InvalidateRect(hwnd, None, true);
-                }
-                IDC_PORT_APPLY => {
-                    match apply_port_from_edit() {
-                        Ok(()) => {
-                            let _ = SetWindowTextW(hwnd, PCWSTR(wcs("开放 API — 端口已应用").as_ptr()));
-                            let _ = InvalidateRect(hwnd, None, true);
-                        }
-                        Err(e) => {
-                            let t = format!("开放 API — {e}");
-                            let _ = SetWindowTextW(hwnd, PCWSTR(wcs(&t).as_ptr()));
-                        }
-                    }
-                }
-                _ => {}
-            }
-            LRESULT(0)
-        }
         WM_CLOSE => {
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
-            let st = state();
-            let mut s = st.lock().unwrap();
-            destroy_openapi_controls(&mut s);
-            s.hwnd = None;
+            state().lock().unwrap().hwnd = None;
             LRESULT(0)
         }
         WM_KEYDOWN => {
@@ -435,11 +186,10 @@ unsafe extern "system" fn about_wnd_proc(
             let key = st.lock().unwrap().key.clone();
             let cy = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
             let cx = (lparam.0 & 0xFFFF) as i16 as i32;
-            let (_cw, ch) = client_size(hwnd);
-            let btn = btn_rect_at(ch);
-            if point_in(&btn, cx, cy) && has_action_btn(&key) {
-                if key == "about" {
-                    let url = wcs(crate::about::WEBSITE_URL);
+            let hit = |r: RECT| cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom;
+            if is_feedback_key(&key) {
+                if hit(btn_forum_rect()) {
+                    let url = wcs(crate::about::FORUM_URL);
                     let open = wcs("open");
                     let _ = ShellExecuteW(
                         None,
@@ -449,12 +199,18 @@ unsafe extern "system" fn about_wnd_proc(
                         PCWSTR::null(),
                         SW_SHOW,
                     );
-                } else if key == "feedback" || key == "contact" {
-                    crate::feedback::open_forum();
-                } else if key == "dynamic" {
-                    let body = st.lock().unwrap().dynamic_body.clone();
-                    if copy_to_clipboard(&body) {
-                        let _ = SetWindowTextW(hwnd, PCWSTR(wcs("详情 — 已复制到剪贴板").as_ptr()));
+                } else if hit(btn_diag_rect()) {
+                    crate::feedback::feedback_and_open();
+                }
+            } else if key == "dynamic" && hit(btn_rect()) {
+                let (body, title) = {
+                    let g = st.lock().unwrap();
+                    (g.dynamic_body.clone(), g.dynamic_title.clone())
+                };
+                if copy_to_clipboard(&body) {
+                    let msg = format!("{title} — 已复制到剪贴板");
+                    unsafe {
+                        let _ = SetWindowTextW(hwnd, PCWSTR(wcs(&msg).as_ptr()));
                     }
                 }
             }
@@ -464,16 +220,31 @@ unsafe extern "system" fn about_wnd_proc(
     }
 }
 
-fn has_action_btn(key: &str) -> bool {
-    key == "about" || key == "feedback" || key == "contact" || key == "dynamic"
+fn btn_rect() -> RECT {
+    // dynamic「复制文本」单按钮
+    RECT {
+        left: MARGIN,
+        top: WIN_H - 90,
+        right: MARGIN + 140,
+        bottom: WIN_H - 90 + 34,
+    }
 }
 
-fn action_btn_label(key: &str) -> &'static str {
-    match key {
-        "about" => "打开官网",
-        "feedback" | "contact" => "打开论坛",
-        "dynamic" => "复制内容",
-        _ => "",
+fn btn_forum_rect() -> RECT {
+    RECT {
+        left: MARGIN,
+        top: WIN_H - 90,
+        right: MARGIN + 120,
+        bottom: WIN_H - 90 + 34,
+    }
+}
+
+fn btn_diag_rect() -> RECT {
+    RECT {
+        left: MARGIN + 132,
+        top: WIN_H - 90,
+        right: MARGIN + 132 + 140,
+        bottom: WIN_H - 90 + 34,
     }
 }
 
@@ -489,17 +260,21 @@ fn copy_to_clipboard(text: &str) -> bool {
             let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             let bytes = units.len() * 2;
             match GlobalAlloc(GMEM_MOVEABLE, bytes) {
-                Ok(h) if !h.is_invalid() => {
+                Ok(h) => {
                     let p = GlobalLock(h);
                     if p.is_null() {
                         false
                     } else {
-                        std::ptr::copy_nonoverlapping(units.as_ptr(), p as *mut u16, units.len());
+                        std::ptr::copy_nonoverlapping(
+                            units.as_ptr() as *const u8,
+                            p as *mut u8,
+                            bytes,
+                        );
                         let _ = GlobalUnlock(h);
                         SetClipboardData(CF_UNICODETEXT.0 as u32, HANDLE(h.0)).is_ok()
                     }
                 }
-                _ => false,
+                Err(_) => false,
             }
         } else {
             false
@@ -509,38 +284,18 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
 }
 
-fn draw_btn(hdc: HDC, btn: RECT, label: &str) {
-    unsafe {
-        let bb = CreateSolidBrush(COLORREF(COL_BTN));
-        let mut br = btn;
-        FillRect(hdc, &mut br, bb);
-        let _ = DeleteObject(bb);
-        let pen = CreatePen(PS_SOLID, 1, COLORREF(COL_ACCENT));
-        let opn = SelectObject(hdc, pen);
-        let obr = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        let _ = RoundRect(hdc, btn.left, btn.top, btn.right, btn.bottom, 8, 8);
-        SelectObject(hdc, obr);
-        SelectObject(hdc, opn);
-        let _ = DeleteObject(pen);
-        SetTextColor(hdc, COLORREF(COL_ACCENT));
-        let mut lw = wcs(label);
-        let mut lrc = btn;
-        DrawTextW(hdc, &mut lw, &mut lrc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-}
-
 fn paint(hwnd: HWND) {
-    let (key, scroll_y, dynamic_body) = {
-        let st = state();
-        let s = st.lock().unwrap();
-        (s.key.clone(), s.scroll_y, s.dynamic_body.clone())
-    };
+    let key = state().lock().unwrap().key.clone();
     let (title, body) = if key == "dynamic" {
-        ("详情".to_string(), dynamic_body)
+        let g = state();
+        let g = g.lock().unwrap();
+        (g.dynamic_title.clone(), g.dynamic_body.clone())
     } else {
         let (t, b) = crate::about::lookup(&key).unwrap_or(("关于", crate::about::ABOUT_BODY));
         (t.to_string(), b.to_string())
     };
+    let title: &str = &title;
+    let body: &str = &body;
     let mut ps = PAINTSTRUCT::default();
     unsafe {
         let hdc = BeginPaint(hwnd, &mut ps);
@@ -552,14 +307,34 @@ fn paint(hwnd: HWND) {
         SetBkMode(hdc, TRANSPARENT);
 
         let tf = CreateFontW(
-            -20, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0,
-            DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32, CLIP_DEFAULT_PRECIS.0 as u32,
-            CLEARTYPE_QUALITY.0 as u32, DEFAULT_PITCH.0 as u32, PCWSTR(wcs("Microsoft YaHei UI").as_ptr()),
+            -20,
+            0,
+            0,
+            0,
+            FW_BOLD.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET.0 as u32,
+            OUT_DEFAULT_PRECIS.0 as u32,
+            CLIP_DEFAULT_PRECIS.0 as u32,
+            CLEARTYPE_QUALITY.0 as u32,
+            DEFAULT_PITCH.0 as u32,
+            PCWSTR(wcs("Microsoft YaHei UI").as_ptr()),
         );
-        let old = if !tf.is_invalid() { Some(SelectObject(hdc, tf)) } else { None };
+        let old = if !tf.is_invalid() {
+            Some(SelectObject(hdc, tf))
+        } else {
+            None
+        };
         SetTextColor(hdc, COLORREF(COL_TITLE));
-        let mut trc = RECT { left: MARGIN, top: MARGIN, right: rc.right - MARGIN, bottom: MARGIN + 30 };
-        let mut t = wcs(&title);
+        let mut trc = RECT {
+            left: MARGIN,
+            top: MARGIN,
+            right: rc.right - MARGIN,
+            bottom: MARGIN + 30,
+        };
+        let mut t = wcs(title);
         DrawTextW(hdc, &mut t, &mut trc, DT_LEFT | DT_SINGLELINE);
         let sep = CreatePen(PS_SOLID, 1, COLORREF(0x00ECE9E4));
         let op = SelectObject(hdc, sep);
@@ -572,72 +347,71 @@ fn paint(hwnd: HWND) {
             let _ = DeleteObject(tf);
         }
 
-        let foot = footer_height(&key);
-        let body_bottom = rc.bottom - foot;
-
-        if key == "openapi" {
-            let cfg = crate::open_api::load_config();
-            let status = format!(
-                "当前：{}　·　仅 127.0.0.1　·　配置 %LOCALAPPDATA%\\Prisir\\IME\\open_api.json",
-                if cfg.enabled { "已启用" } else { "已关闭" }
-            );
-            let sf = CreateFontW(
-                -14, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0,
-                DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32, CLIP_DEFAULT_PRECIS.0 as u32,
-                CLEARTYPE_QUALITY.0 as u32, DEFAULT_PITCH.0 as u32, PCWSTR(wcs("Microsoft YaHei UI").as_ptr()),
-            );
-            let olds = if !sf.is_invalid() { Some(SelectObject(hdc, sf)) } else { None };
-            SetTextColor(hdc, COLORREF(COL_ACCENT));
-            // 状态单独一行，在启用按钮上方
-            let mut src = RECT {
-                left: MARGIN,
-                top: rc.bottom - 140,
-                right: rc.right - MARGIN,
-                bottom: rc.bottom - 112,
-            };
-            let mut sw = wcs(&status);
-            DrawTextW(hdc, &mut sw, &mut src, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-            // 「端口」标签（输入框左侧）
-            let mut plab = RECT {
-                left: MARGIN,
-                top: rc.bottom - 52,
-                right: MARGIN + 52,
-                bottom: rc.bottom - 20,
-            };
-            let mut pw = wcs("端口");
-            DrawTextW(hdc, &mut pw, &mut plab, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            if let Some(o) = olds {
-                SelectObject(hdc, o);
-                let _ = DeleteObject(sf);
-            }
-        }
-
         let bf = CreateFontW(
-            -15, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0,
-            DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32, CLIP_DEFAULT_PRECIS.0 as u32,
-            CLEARTYPE_QUALITY.0 as u32, DEFAULT_PITCH.0 as u32, PCWSTR(wcs("Microsoft YaHei UI").as_ptr()),
+            -14,
+            0,
+            0,
+            0,
+            FW_NORMAL.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET.0 as u32,
+            OUT_DEFAULT_PRECIS.0 as u32,
+            CLIP_DEFAULT_PRECIS.0 as u32,
+            CLEARTYPE_QUALITY.0 as u32,
+            DEFAULT_PITCH.0 as u32,
+            PCWSTR(wcs("Microsoft YaHei UI").as_ptr()),
         );
-        let old2 = if !bf.is_invalid() { Some(SelectObject(hdc, bf)) } else { None };
+        let old2 = if !bf.is_invalid() {
+            Some(SelectObject(hdc, bf))
+        } else {
+            None
+        };
         SetTextColor(hdc, COLORREF(COL_TEXT));
-        let clip = RECT {
+        let body_bottom = if needs_action_btn(&key) {
+            btn_rect().top - 12
+        } else {
+            rc.bottom - MARGIN
+        };
+        let mut brc = RECT {
             left: MARGIN,
             top: MARGIN + 50,
             right: rc.right - MARGIN,
             bottom: body_bottom,
         };
-        IntersectClipRect(hdc, clip.left, clip.top, clip.right, clip.bottom);
-        let mut brc = RECT {
-            left: MARGIN,
-            top: MARGIN + 50 - scroll_y,
-            right: rc.right - MARGIN,
-            bottom: MARGIN + 50 - scroll_y + 4000,
-        };
-        let mut b = wcs(&body);
+        let mut b = wcs(body);
         DrawTextW(hdc, &mut b, &mut brc, DT_LEFT | DT_WORDBREAK);
-        SelectClipRgn(hdc, HRGN::default());
 
-        if has_action_btn(&key) {
-            draw_btn(hdc, btn_rect_at(rc.bottom), action_btn_label(&key));
+        if needs_action_btn(&key) {
+            let draw_btn = |btn: RECT, label: &str| {
+                let bb = CreateSolidBrush(COLORREF(COL_BTN));
+                let mut br = btn;
+                FillRect(hdc, &mut br, bb);
+                let _ = DeleteObject(bb);
+                let pen = CreatePen(PS_SOLID, 1, COLORREF(COL_ACCENT));
+                let opn = SelectObject(hdc, pen);
+                let obr = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                let _ = RoundRect(hdc, btn.left, btn.top, btn.right, btn.bottom, 8, 8);
+                SelectObject(hdc, obr);
+                SelectObject(hdc, opn);
+                let _ = DeleteObject(pen);
+                SetTextColor(hdc, COLORREF(COL_ACCENT));
+                let mut lw = wcs(label);
+                let mut lrc = btn;
+                DrawTextW(
+                    hdc,
+                    &mut lw,
+                    &mut lrc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                );
+            };
+            if is_feedback_key(&key) {
+                draw_btn(btn_forum_rect(), "打开论坛");
+                draw_btn(btn_diag_rect(), "打包诊断");
+            } else {
+                draw_btn(btn_rect(), "复制文本");
+            }
         }
 
         if let Some(o) = old2 {

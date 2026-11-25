@@ -181,6 +181,10 @@ impl PinyinBuffer {
 
     /// 空格上屏 — 默认选可视区 `selected` 位置(默认 0 = 首行),候选为空时直接
     /// 上屏缓冲区(简拼模式无候选时,把整个拼音按字面量提交,符合大多数 IME 行为)。
+    ///
+    /// **所见即所得(2026-11-25 用户决策)**:这里是**唯一**的上屏来源,上屏内容
+    /// 恒等于候选窗显示的那一条。历史上这里前面还挂着一层 smart_sentence 整句替换,
+    /// 导致「看到 雅可比猜想、上屏 有啊可比出现」—— 中间层已删除,不再回来。
     pub fn on_space(&mut self) -> Option<String> {
         let chosen = if self.candidates.is_empty() {
             std::mem::take(&mut self.buf)
@@ -448,6 +452,31 @@ mod tests {
         let mut b2 = PinyinBuffer::new();
         for c in "ni".chars() { b2.on_char(c); }
         assert_eq!(b2.on_space().as_deref(), Some("ni"));
+    }
+
+    #[test]
+    fn space_commits_exactly_the_displayed_top_candidate() {
+        // 2026-11-25 用户实测:`yakebicx` 候选窗第 1 行是「雅可比猜想」,
+        // 按空格却上屏整句「有啊可比出现」,还把它学进了词库。
+        // 中间层(空格前 smart_sentence 替换)已删除,现在只有这样一条铁律:
+        //   **空格上屏的 == 候选窗显示的第 1 行**。
+        let mut b = PinyinBuffer::new();
+        for c in "yakebicx".chars() { b.on_char(c); }
+        b.set_candidates(vec![
+            Candidate::new("雅可比猜想", 6000),
+            Candidate::new("亚可比猜想", 100),
+        ]);
+        assert_eq!(b.on_space().as_deref(), Some("雅可比猜想"));
+        assert!(b.candidates.is_empty(), "上屏后候选必须清空");
+    }
+
+    #[test]
+    fn space_never_invents_text_not_in_candidates() {
+        // 无候选时空格上屏原始字母(字母直通),不可能是任何「整句」。
+        let mut b = PinyinBuffer::new();
+        for c in "yakebi".chars() { b.on_char(c); }
+        // candidates 保持空(词库没命中)
+        assert_eq!(b.on_space().as_deref(), Some("yakebi"));
     }
 
     #[test]

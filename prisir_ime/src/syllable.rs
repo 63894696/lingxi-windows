@@ -89,12 +89,44 @@ impl Syllables {
     ///   "64"    → ["mi", "ni", "oi"]
     ///   "64426" → ["mi gan", "mi han", "ni gan", "ni han", …]
     ///
+    /// 支持搜狗式分词符 `'`：强制在断点切音节，段与段之间用 `'` 连接——
+    ///   "94'26" → ["xi'an", "yi'an", …]（西安），不会被拆成整串 "xian"（先）。
+    ///
     /// 拼不出来时返回空（例如只按了 "6"，或 "644" 这种中间态）——
     /// 调用方据此回退到词库 t9 表的前缀匹配，**不要假装知道拼音**。
     ///
     /// 实测（对 30 万词真实词库逐条比对）：该展开能覆盖 99% 以上的真实拼音 key，
     /// 漏掉的只有 "zh"/"sh"/"w" 这类简拼式单字母 key。
     pub fn t9_expand(&self, digits: &str) -> Vec<String> {
+        let cleaned: String = digits
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '\'')
+            .collect();
+        if cleaned.is_empty() {
+            return Vec::new();
+        }
+        if cleaned.contains('\'') {
+            let parts: Vec<&str> = cleaned.split('\'').filter(|p| !p.is_empty()).collect();
+            if parts.is_empty() {
+                return Vec::new();
+            }
+            if parts.len() == 1 {
+                return self.t9_expand_plain(parts[0]);
+            }
+            let mut sets: Vec<Vec<String>> = Vec::with_capacity(parts.len());
+            for p in &parts {
+                let e = self.t9_expand_plain(p);
+                if e.is_empty() {
+                    return Vec::new();
+                }
+                sets.push(e);
+            }
+            return t9_join_segments(sets, MAX_T9_EXPAND);
+        }
+        self.t9_expand_plain(&cleaned)
+    }
+
+    fn t9_expand_plain(&self, digits: &str) -> Vec<String> {
         if digits.is_empty() {
             return Vec::new();
         }
@@ -259,6 +291,32 @@ fn is_initial_byte(c: u8) -> bool {
     )
 }
 
+/// 分词段笛卡尔积：段内读音仍空格分隔，段与段之间用 `'`（搜狗式显示）。
+fn t9_join_segments(sets: Vec<Vec<String>>, limit: usize) -> Vec<String> {
+    let mut acc: Vec<String> = vec![String::new()];
+    for set in sets {
+        let mut next: Vec<String> = Vec::new();
+        'outer: for prefix in &acc {
+            for item in &set {
+                if next.len() >= limit {
+                    break 'outer;
+                }
+                let joined = if prefix.is_empty() {
+                    item.clone()
+                } else {
+                    format!("{prefix}'{item}")
+                };
+                next.push(joined);
+            }
+        }
+        acc = next;
+        if acc.is_empty() {
+            break;
+        }
+    }
+    acc
+}
+
 /// 九宫格展开的 DFS：rest 是还没被消费的字串，acc 是已选的音节。
 ///
 /// 每次取 rest 的一个前缀（1~6 位），查有没有**编码恰好等于**该前缀的音节；
@@ -338,5 +396,23 @@ mod t9_expand_tests {
         let rs = s.t9_expand("64426");
         assert!(rs.iter().any(|p| p == "ni hao"), "64426 → ni hao，实际 {:?}", rs);
         assert!(rs.iter().any(|p| p == "mi gao"), "64426 → mi gao，实际 {:?}", rs);
+    }
+
+    #[test]
+    fn xian_separator_forces_xi_an_not_xian() {
+        let s = Syllables::new();
+        let with_sep = s.t9_expand("94'26");
+        assert!(
+            with_sep.iter().any(|p| p == "xi'an"),
+            "94'26 应展开出 xi'an（西安），实际 {:?}",
+            &with_sep[..with_sep.len().min(16)]
+        );
+        // 无分词时整串可切成单音节 xian（先）
+        let plain = s.t9_expand("9426");
+        assert!(
+            plain.iter().any(|p| p == "xian"),
+            "9426 无分词应仍能出 xian，实际 {:?}",
+            &plain[..plain.len().min(16)]
+        );
     }
 }

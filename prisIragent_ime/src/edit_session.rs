@@ -228,9 +228,24 @@ impl PrisirEditSession_Impl {
                     crate::com_class_factory::log_dll_entry(&format!("EditSession: Commit GetRange FAIL {e}"));
                 }
             }
-            let _ = unsafe { comp.EndComposition(ec) };
-            #[cfg(feature = "dllentry_log")]
-            crate::com_class_factory::log_dll_entry("EditSession: Commit EndComposition OK");
+            // 2026-11-25 修「提交英文后退格没反应」:EndComposition 失败不能静默吞。
+            // 失败意味着 host 仍认为 composition 活着(它才是决定退格归谁处理的一方),
+            // 必须把句柄**放回状态**,让 heal_stale_composition 在下一次按键前重试收尾;
+            // 之前的 `let _ =` + 句柄已被 take → 状态与 host 不一致,退格被 host 吞掉。
+            match unsafe { comp.EndComposition(ec) } {
+                Ok(()) => {
+                    #[cfg(feature = "dllentry_log")]
+                    crate::com_class_factory::log_dll_entry("EditSession: Commit EndComposition OK");
+                }
+                Err(e) => {
+                    #[cfg(feature = "dllentry_log")]
+                    crate::com_class_factory::log_dll_entry(&format!(
+                        "EditSession: Commit EndComposition FAIL hr=0x{:08X} (句柄放回,等 heal)",
+                        e.code().0 as u32));
+                    *self.this.st.composition.lock().unwrap() = Some(comp);
+                    return Err(e);
+                }
+            }
             return Ok(());
         }
 
@@ -265,10 +280,22 @@ impl PrisirEditSession_Impl {
             g.take()
         };
         if let Some(comp) = comp {
-            let _ = unsafe { comp.EndComposition(ec) };
-            self.this.st.composition_range.lock().unwrap().take();
-            #[cfg(feature = "dllentry_log")]
-            crate::com_class_factory::log_dll_entry("EditSession: EndComposition OK");
+            // 同 commit:失败必须把句柄放回,否则状态与 host 不一致 → 后续按键被幽灵 composition 吞。
+            match unsafe { comp.EndComposition(ec) } {
+                Ok(()) => {
+                    self.this.st.composition_range.lock().unwrap().take();
+                    #[cfg(feature = "dllentry_log")]
+                    crate::com_class_factory::log_dll_entry("EditSession: EndComposition OK");
+                }
+                Err(e) => {
+                    #[cfg(feature = "dllentry_log")]
+                    crate::com_class_factory::log_dll_entry(&format!(
+                        "EditSession: EndComposition FAIL hr=0x{:08X} (句柄放回,等 heal)",
+                        e.code().0 as u32));
+                    *self.this.st.composition.lock().unwrap() = Some(comp);
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }
@@ -304,6 +331,13 @@ impl PrisirEditSession_Impl {
             #[cfg(feature = "dllentry_log")]
             crate::com_class_factory::log_dll_entry(&format!(
                 "EditSession: CancelComposition EndComposition hr={:?}", r.as_ref().map(|_| ()).map_err(|e| e.code().0 as u32)));
+            // 失败 = host 侧组合还在;放回句柄让 heal_stale_composition 下次重试。
+            // 不放回的话状态显示「已结束」而 host 仍卡在组合里 → 退格被吞(2026-11-25)。
+            if let Err(e) = r {
+                *self.this.st.composition.lock().unwrap() = Some(comp);
+                self.repaint_host();
+                return Err(e);
+            }
         }
         #[cfg(feature = "dllentry_log")]
         crate::com_class_factory::log_dll_entry("EditSession: CancelComposition OK");

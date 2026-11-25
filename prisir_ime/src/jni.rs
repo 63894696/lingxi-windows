@@ -589,6 +589,37 @@ pub extern "system" fn Java_com_lingxi_ime_Engine_nativePinyinFor(
     }
 }
 
+/// 灵犀造词：按候选位写入 user_word（全拼主行+简拼别名，与 Win/Linux 同语义）。
+#[no_mangle]
+pub extern "system" fn Java_com_lingxi_ime_Engine_nativeUserAddPos(
+    mut env: JNIEnv, _cls: JClass, handle: jlong, pinyin: JString, word: JString, pos: jlong,
+) -> jboolean {
+    let (Some(engine), p, w) = (engine_of(handle), jstr(&mut env, &pinyin), jstr(&mut env, &word)) else {
+        return 0;
+    };
+    if w.is_empty() {
+        return 0;
+    }
+    match engine.user_add_pos(&p, &w, pos) {
+        Ok(()) => 1,
+        Err(_) => 0,
+    }
+}
+
+/// 中文 → 简拼编码（造词窗显示用）。
+#[no_mangle]
+pub extern "system" fn Java_com_lingxi_ime_Engine_nativeAutoCode(
+    mut env: JNIEnv, _cls: JClass, handle: jlong, word: JString,
+) -> jstring {
+    let (Some(engine), w) = (engine_of(handle), jstr(&mut env, &word)) else {
+        return std::ptr::null_mut();
+    };
+    match engine.auto_code(&w) {
+        Some(c) if !c.is_empty() => out(&mut env, c),
+        _ => std::ptr::null_mut(),
+    }
+}
+
 /// 释放引擎句柄。
 #[no_mangle]
 pub extern "system" fn Java_com_lingxi_ime_Engine_nativeFree(

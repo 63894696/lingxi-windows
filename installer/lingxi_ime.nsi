@@ -49,6 +49,8 @@ SetCompressor /SOLID lzma
 !define MUI_ICON   "${SRC}\pinyin.ico"
 !define MUI_UNICON "${SRC}\pinyin.ico"
 !insertmacro MUI_PAGE_WELCOME
+; 协议页必须用 LICENSE.txt（AGPL-3.0 全文，ASCII）。
+; 切勿用 UTF-8 中文 ABOUT.md：NSIS Unicode 下会整页乱码。
 !insertmacro MUI_PAGE_LICENSE "${SRC}\LICENSE.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -156,35 +158,16 @@ Section "安装" SEC01
     ;   修法(方案 A): exe 改绝对路径直指安装目录,与 AI 插件同款; plugin.rs PathBuf::join
     ;   遇绝对路径直接采用,不再拼插件根。语音文件不重复占盘。
     DetailPrint "写入插件配置 plugins.json ..."
-    ; 2026-11-21: 上面第 73 行 SetShellVarContext all 让 $LOCALAPPDATA 指向 CommonAppData,
-    ; 输入法(用户态 DLL)读的是当前用户 %LOCALAPPDATA%, 因此「语」按钮永远不出现。
-    ; 写插件配置时切回 user context, 写完再切回 all(卸载器注册表继续用 HKLM/CommonAppData)。
-    SetShellVarContext current
     CreateDirectory "$LOCALAPPDATA\Prisir"
     CreateDirectory "$LOCALAPPDATA\Prisir\plugins"
-    FileOpen $0 "$LOCALAPPDATA\Prisir\plugins.json" w
-    FileWrite $0 '{$\r$\n'
-    FileWrite $0 '  "plugins": [$\r$\n'
-    FileWrite $0 '    {$\r$\n'
-    FileWrite $0 '      "id": "voice",$\r$\n'
-    FileWrite $0 '      "name": "语音听写",$\r$\n'
-    FileWrite $0 '      "exe": "C:/Program Files/PrisirIME/voice/lingxi_voice.exe",$\r$\n'
-    FileWrite $0 '      "event": "PrisirLingXi_VoiceToggle_Event",$\r$\n'
-    FileWrite $0 '      "button": "语",$\r$\n'
-    FileWrite $0 '      "enabled": true$\r$\n'
-    FileWrite $0 '    },$\r$\n'
-    FileWrite $0 '    {$\r$\n'
-    FileWrite $0 '      "id": "ai",$\r$\n'
-    FileWrite $0 '      "name": "AI 助手",$\r$\n'
-    FileWrite $0 '      "exe": "C:/Program Files/PrisirAI/PrisirAI.vbs",$\r$\n'
-    FileWrite $0 '      "event": "PrisirLingXi_AiToggle_Event",$\r$\n'
-    FileWrite $0 '      "button": "AI",$\r$\n'
-    FileWrite $0 '      "enabled": true$\r$\n'
-    FileWrite $0 '    }$\r$\n'
-    FileWrite $0 '  ]$\r$\n'
-    FileWrite $0 '}$\r$\n'
-    FileClose $0
-    SetShellVarContext all
+    ; 2026-11-25 修复: 原来用 FileWrite 逐行拼 JSON。NSIS 的 FileWrite 按**系统 ANSI
+    ; 代码页**落盘,中文 Windows 上「语音听写」「语」「AI 助手」写成 GBK 字节,而
+    ; Rust 侧 read_to_string 只认 UTF-8 → 整个 plugins.json 解析失败 → 插件列表为空
+    ; → 悬浮栏没有「语」、菜单没有「语音听写」= 用户反馈「语音输入被弄丢了」。
+    ; 现在改为随包安装一个真正的 UTF-8 plugins.json(installer/plugins.json),零编码风险。
+    ; plugin.rs 侧同时保留 CP_ACP 兜底解码,老版本安装残留的 GBK 文件也能读。
+    SetOutPath "$LOCALAPPDATA\Prisir"
+    File "plugins.json"
 
     ; 卸载器
     SetOutPath "$INSTDIR"
@@ -237,12 +220,11 @@ Section "安装" SEC01
         ${EndIf}
     ${EndIf}
 
-    ; ---- 装完一次性弹窗(2026-11-21: 不再宣称已设为默认) ----
-    ; 是否设为默认输入法由用户在 Windows 设置中自行选择。
+    ; ---- 装完一次性弹窗(2026-09-05, 对齐搜狗体验) ----
     ; 静默(/S)模式不弹(无人值守, ssh 下也弹不出交互框)。
     ${IfNot} ${Silent}
         MessageBox MB_ICONINFORMATION|MB_OK \
-            "Prisir 灵犀拼音已安装完成。$\n$\n请在 Windows 设置 → 时间和语言 → 语言和区域 → 键盘 中添加/切换到该输入法。"
+            "Prisir 灵犀拼音已安装完成, 并设为默认输入法。"
     ${EndIf}
 SectionEnd
 

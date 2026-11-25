@@ -16,7 +16,6 @@
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
-use std::os::windows::ffi::OsStringExt;
 use std::os::windows::ffi::OsStrExt;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{ERROR_SUCCESS, WIN32_ERROR, BOOL};
@@ -367,111 +366,18 @@ pub struct RegisterResult {
     pub entries_written: usize,
 }
 
-/// 打开「交互登录用户」的 HKCU。
+/// 打开 `HKEY_CURRENT_USER`。
 ///
-/// 2026-11-21 修复: 安装器以 elevated / SYSTEM token 跑 `prisir_tsfsvc --register` 时,
-/// `RegOpenCurrentUser` 返回的是 SYSTEM 账户的 hive, 写进去的 TIP/CLSID 在登录用户下
-/// 完全看不到 → 切换输入法后引擎加载失败 → 候选栏不出现、拼音字母被吞。
-///
-/// 策略: 取活动控制台会话(WTSGetActiveConsoleSessionId)的用户 SID,
-/// 再按 `HKEY_USERS\<SID>` 打开。若取不到(无人值守/无交互会话)则回退 RegOpenCurrentUser。
-fn open_hkcu(sam: REG_SAM_FLAGS) -> Result<HKEY, WIN32_ERROR> {
-    let sid = interactive_user_sid().or_else(|| fallback_sid_from_userprofile());
-    if let Some(sid) = sid {
-        let path = format!(r"USERS\{}", sid);
-        let wide = to_wide(&path);
-        let mut h: HKEY = HKEY::default();
-        let st = unsafe {
-            RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(wide.as_ptr()), 0, sam, &mut h)
-        };
-        if st == ERROR_SUCCESS {
-            return Ok(h);
-        }
-    }
-    // 回退: 当前进程 token 的 HKCU(普通用户态直接调用/无人值守安装)。
+/// windows-rs 0.58 的 `RegOpenCurrentUser(samdesired: u32, phkresult: *mut HKEY) -> WIN32_ERROR`。
+/// 这里直接传 `u32`(`KEY_WRITE.0` / `KEY_READ.0`),不靠 `Param` 推断。
+fn open_hkcu(sam: u32) -> Result<HKEY, WIN32_ERROR> {
     let mut hkcu: HKEY = HKEY::default();
-    let status = unsafe { RegOpenCurrentUser(sam.0, &mut hkcu as *mut HKEY) };
+    let status = unsafe { RegOpenCurrentUser(sam, &mut hkcu as *mut HKEY) };
     if status == ERROR_SUCCESS {
         Ok(hkcu)
     } else {
         Err(status)
     }
-}
-
-/// 活动控制台会话用户的 SID(字符串形态 S-1-5-21-...)。
-///
-/// 两步: WTSQuerySessionInformationW(WTSUserName) 拿交互用户名 →
-/// LookupAccountNameW 拿二进制 SID → ConvertSidToStringSidW 转字符串。
-fn interactive_user_sid() -> Option<String> {
-    use windows::Win32::Foundation::LocalFree;
-    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows::Win32::Foundation::HLOCAL;
-    use windows::Win32::Security::{LookupAccountNameW, PSID, SID_NAME_USE};
-    use windows::Win32::System::RemoteDesktop::{
-        WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQuerySessionInformationW,
-        WTSUserName, WTS_INFO_CLASS,
-    };
-    use windows::core::PWSTR;
-
-    let session = unsafe { WTSGetActiveConsoleSessionId() };
-    if session == u32::MAX {
-        return None;
-    }
-    let mut name_buf: PWSTR = PWSTR::null();
-    let mut name_len: u32 = 0;
-    let ok = unsafe { WTSQuerySessionInformationW(
-        None,
-        session,
-        WTSUserName,
-        &mut name_buf,
-        &mut name_len,
-    ) };
-    if ok.is_err() || name_buf.is_null() || name_len == 0 {
-        return None;
-    }
-    let user_os = std::ffi::OsString::from_wide(unsafe {
-        std::slice::from_raw_parts(name_buf.0, name_len as usize)
-    });
-    unsafe { WTSFreeMemory(name_buf.0 as *mut std::ffi::c_void) };
-    let user = user_os.to_string_lossy().trim_end_matches('\0').to_string();
-    if user.is_empty() {
-        return None;
-    }
-
-    let mut sid_buf = [0u8; 68];
-    let mut sid_len = sid_buf.len() as u32;
-    let mut domain_buf = [0u16; 256];
-    let mut domain_len = domain_buf.len() as u32;
-    let mut use_type = SID_NAME_USE(0);
-    let user_w = to_wide(&user);
-    let ok = unsafe { LookupAccountNameW(
-        None,
-        windows::core::PCWSTR(user_w.as_ptr()),
-        PSID(sid_buf.as_mut_ptr() as *mut std::ffi::c_void),
-        &mut sid_len,
-        PWSTR(domain_buf.as_mut_ptr()),
-        &mut domain_len,
-        &mut use_type,
-    ) };
-    if ok.is_err() {
-        return None;
-    }
-    let mut sid_str_ptr: PWSTR = PWSTR::null();
-    let ok = unsafe { ConvertSidToStringSidW(
-        PSID(sid_buf.as_ptr() as *mut std::ffi::c_void),
-        &mut sid_str_ptr,
-    ) };
-    if ok.is_err() || sid_str_ptr.is_null() {
-        return None;
-    }
-    let sid_string = unsafe { sid_str_ptr.to_string() }.ok();
-    let _ = unsafe { LocalFree(HLOCAL(sid_str_ptr.0 as *mut std::ffi::c_void)) };
-    sid_string
-}
-
-/// 从当前用户环境变量 USERPROFILE 反推 SID 太脆弱,保留为扩展点。
-fn fallback_sid_from_userprofile() -> Option<String> {
-    None
 }
 
 /// 换 profile GUID 时清理旧占位 GUID 的 LanguageProfile 子键。
@@ -481,7 +387,7 @@ fn fallback_sid_from_userprofile() -> Option<String> {
 /// InputMethodTips 留旧项,Windows 校验旧 GUID 无效 → 每次重启跳「正在安装新键盘」。
 /// best-effort 删除(失败仅 eprintln,不阻断注册)。
 fn migrate_legacy_profile_guids() {
-    let hkcu = match open_hkcu(KEY_WRITE) {
+    let hkcu = match open_hkcu(KEY_WRITE.0) {
         Ok(h) => h,
         Err(_) => return,
     };
@@ -498,7 +404,7 @@ fn migrate_legacy_profile_guids() {
                 let w = to_wide(&path);
                 let status = RegDeleteTreeW(hive, PCWSTR(w.as_ptr()));
                 if status == ERROR_SUCCESS {
-                    eprintln!("[migrate] removed old profile GUID subkey: {path}");
+                    eprintln!("[migrate] 删除旧 profile GUID 子键: {path}");
                 }
                 // ERROR_FILE_NOT_FOUND / ACCESS_DENIED 都静默(HKLM 可能没 admin)。
 
@@ -514,7 +420,7 @@ fn migrate_legacy_profile_guids() {
                     let val_name = format!("0804:{}{}", CLSID_PRISIR_IME_STR, old);
                     let vn_w = to_wide(&val_name);
                     if RegDeleteValueW(pk, PCWSTR(vn_w.as_ptr())) == ERROR_SUCCESS {
-                        eprintln!("[migrate] removed old InputMethodTips entry: {val_name}");
+                        eprintln!("[migrate] 删除 InputMethodTips 旧项: {val_name}");
                     }
                     let _ = RegCloseKey(pk);
                 }
@@ -532,7 +438,7 @@ fn capture_asm_incumbent() -> Option<(String, String)> {
         r"SOFTWARE\Microsoft\CTF\Assemblies\{ASM_LANGID_DIR}\{ASM_LAYOUT_GUID}"
     );
     let read_sz = |name: &str| -> Option<String> {
-        let hkcu = open_hkcu(KEY_READ).ok()?;
+        let hkcu = open_hkcu(KEY_READ.0).ok()?;
         let mut key: HKEY = HKEY::default();
         let path_w = to_wide(&path);
         let st = unsafe { RegOpenKeyExW(hkcu, PCWSTR(path_w.as_ptr()), 0, KEY_READ, &mut key) };
@@ -594,7 +500,7 @@ fn write_asm_map(prev: Option<(&str, &str)>) -> Result<(), String> {
     let path = format!(
         r"SOFTWARE\Microsoft\CTF\Assemblies\{ASM_LANGID_DIR}\{ASM_LAYOUT_GUID}"
     );
-    let hkcu = open_hkcu(KEY_WRITE)
+    let hkcu = open_hkcu(KEY_WRITE.0)
         .map_err(|e| format!("RegOpenCurrentUser 失败: {:?}", WIN32_ERROR(e.0)))?;
     let path_w = to_wide(&path);
     let mut key: HKEY = HKEY::default();
@@ -645,7 +551,7 @@ fn restore_asm_incumbent() {
     let cur_default = cur.as_ref().map(|(d, _)| d.clone()).unwrap_or_default();
     let prisir = CLSID_PRISIR_IME_STR.trim_matches('{').trim_matches('}').to_uppercase();
     if !cur_default.to_uppercase().contains(&prisir) {
-        eprintln!("[unregister] Assemblies layout key owner is not Prisir ({cur_default}); left untouched.");
+        eprintln!("[unregister] Assemblies 布局键当前占用者不是 Prisir({cur_default}), 不动。");
         return;
     }
     // 读我们存的备份(HKLM, 跨 SYSTEM/用户可读, 见 ASM_BACKUP_HKLM 注释)。
@@ -680,9 +586,9 @@ fn restore_asm_incumbent() {
     match target {
         Some((d, p)) => {
             if let Err(e) = write_asm_map(Some((&d, &p))) {
-                eprintln!("[unregister] WARN: failed to restore Assemblies owner (non-fatal): {e}");
+                eprintln!("[unregister] WARN: 恢复 Assemblies 占用者失败(不致命): {e}");
             } else {
-                eprintln!("[unregister] restored Assemblies layout key to previous IME: {d}");
+                eprintln!("[unregister] 已恢复 Assemblies 布局键给原输入法: {d}");
             }
         }
         None => {
@@ -691,9 +597,9 @@ fn restore_asm_incumbent() {
                 "{00000000-0000-0000-0000-000000000000}",
                 "{00000000-0000-0000-0000-000000000000}",
             ))) {
-                eprintln!("[unregister] WARN: failed to clear Assemblies layout key (non-fatal): {e}");
+                eprintln!("[unregister] WARN: 清空 Assemblies 布局键失败(不致命): {e}");
             } else {
-                eprintln!("[unregister] Assemblies layout key cleared (no previous owner).");
+                eprintln!("[unregister] Assemblies 布局键已清空(无原占用者)。");
             }
         }
     }
@@ -714,7 +620,7 @@ pub fn do_register(dll_path: &str) -> Result<RegisterResult, String> {
     // InputMethodTips 会留着旧项。注册前先把旧 GUID 子键删掉,只留新 GUID。
     migrate_legacy_profile_guids();
 
-    let hkcu = open_hkcu(KEY_WRITE)
+    let hkcu = open_hkcu(KEY_WRITE.0)
         .map_err(|e| format!("RegOpenCurrentUser(KEY_WRITE) 失败: {:?}", WIN32_ERROR(e.0)))?;
 
     let mut written = 0usize;
@@ -805,11 +711,38 @@ pub fn do_register(dll_path: &str) -> Result<RegisterResult, String> {
 
     let _ = unsafe { RegCloseKey(hkcu) };
 
-    // ---- 2026-11-21: 不再自动设为默认输入法 ----
-    // 原实现(2026-09-05)抢占 0x0804 Assemblies 映射, 装完立即把默认输入法切到 Prisir。
-    // 按用户要求移除: 是否切换/设为默认完全交给用户在 Windows 设置中自行选择。
-    // 输入法本身仍完整注册(CLSID/TIP/LanguageProfile), 可正常在语言栏切换使用。
-    // 保留卸载时的 restore_asm_incumbent(): 兼容历史版本写入的备份。
+    // ---- 2026-09-05: 装完即用 — 占 0x0804 布局键, 写 HKCU Assemblies 映射 ----
+    //
+    // 用户决策(2026-09-05): 学搜狗, 装完就让 Prisir 上屏, 之后切不切是用户的事。
+    // 机制: ctfmon 运行时读 HKCU\CTF\Assemblies\0x0804\{layout} 的 Default/Profile,
+    // 写完任务栏输入法即变, 不需要重启 explorer。0x0804 布局键同一时刻只绑一个 TIP,
+    // 我们占它 = 把当前默认输入法临时换成 Prisir(卸载时恢复原占用者, 见 do_unregister)。
+    //
+    // 步骤: 1) 捕获现有占用者存到 HKLM(跨 SYSTEM/用户可读, 见 ASM_BACKUP_HKLM 注释);
+    //       2) 写 Prisir 为占用者(写当前进程看到的 HKCU)。
+    // 失败不致命(WARN) — 注册表主体已写, 注销重登后 TIPC 仍会枚举生效。
+    let incumbent = capture_asm_incumbent();
+    if let Some((d, p)) = &incumbent {
+        let pw = to_wide(ASM_BACKUP_HKLM);
+        let mut bkey: HKEY = HKEY::default();
+        let st = unsafe {
+            RegCreateKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(pw.as_ptr()), 0, None, REG_OPTION_NON_VOLATILE, KEY_WRITE, None, &mut bkey, None)
+        };
+        if st == ERROR_SUCCESS {
+            let _ = unsafe { write_sz(bkey, "AsmPrevDefault", d) };
+            let _ = unsafe { write_sz(bkey, "AsmPrevProfile", p) };
+            let _ = unsafe { RegCloseKey(bkey) };
+            eprintln!("[register] 已记录 Assemblies 原占用者到 HKLM(卸载时恢复): {d}");
+        } else {
+            eprintln!("[register] WARN: 备份原占用者到 HKLM 失败(不致命, 卸载将无法自动恢复): {:?}", WIN32_ERROR(st.0));
+        }
+    }
+    if let Err(e) = write_asm_map(None) {
+        eprintln!("[register] WARN: 写 Assemblies 装完即用映射失败(不致命): {e}");
+        eprintln!("[register]   注销重登后 TIPC 仍会枚举生效; 装完即用失效。");
+    } else {
+        eprintln!("[register] 已占 0x0804 布局键, 写入装完即用 Assemblies 映射(任务栏即时生效)");
+    }
 
     // ---- T17 → T24: 同步写 HKLM\Classes\CLSID (TIPC 枚举关键) ----
     //
@@ -825,15 +758,19 @@ pub fn do_register(dll_path: &str) -> Result<RegisterResult, String> {
     // **T24 hotfix**:admin 缺失时**不再静默成功**(宪法 §5b 关键路径不许假 PASS)。
     // HKLM\..\InprocServer32 写失败 → TIPC 永远激活不了 Prisir → 必须返 Err,
     // 让用户去用 --register-elevated 或 admin PowerShell 手动跑。
-    // 2026-11-21: HKLM 写失败改为 WARN(非致命)。
-    // HKCU TIP 树是 per-user 注册的主体, 已在此前写妥; HKLM COM 类是加 *系统级可见*,
-    // 写不了时 TIPC 仍可通过 per-user 路径枚举。安装器本身是 elevated, 正常路径下
-    // 这里必然成功; 只有手动非提权跑 --register 才走 WARN 分支。
     if let Err(e) = write_hklm_com_class(&dll) {
-        eprintln!("[register] WARN: HKLM CLSID not written (needs admin): {e}");
-    } else {
-        eprintln!("[register] HKLM\\Classes\\CLSID written (system-wide COM visible)");
+        return Err(format!(
+            "写 HKLM\\Classes\\CLSID\\{}\\InprocServer32 失败: {}\n\
+             修复路径:\n\
+             1. `prisir_tsfsvc.exe --register-elevated` (自动 UAC 提权)\n\
+             2. 或管理员 PowerShell: `Start-Process prisir_tsfsvc.exe -ArgumentList '--register' -Verb RunAs`\n\
+             3. 或 regsvr32: `regsvr32 \"C:\\Program Files\\PrisirIME\\prisir_ime_tsf.dll\"` (待 T24 P3 实现 DllRegisterServer)\n\
+             没 HKLM 这层时 TIPC/ctfmon 调 CoCreateInstance(CLSID_PRISIR_IME) 会返 REGDB_E_CLASSNOTREG,\n\
+             TIPC 静默 drop Prisir,Assemblies 永远没 Prisir — --register 必须返 Err。",
+            CLSID_PRISIR_IME_STR, e
+        ));
     }
+    eprintln!("[register] HKLM\\Classes\\CLSID 已写入(系统级 COM 可见)");
 
     // ---- T25 fix6: 同步写 HKLM\..\TIP\{CLSID} 整树 ----
     //
@@ -846,13 +783,19 @@ pub fn do_register(dll_path: &str) -> Result<RegisterResult, String> {
     // 是 TIPC 决定「拉起该 TIP」的关键字段 — 仅 HKCU 这层 ctfmon 走 SYSTEM token
     // 看不到,Settings 选中后 ctfmon 不会 LoadLibrary DLL。
     //
-    // 2026-11-21: admin 缺失时改 WARN(非致命), 与 HKLM CLSID 一致。
-    // 安装器是 elevated, 正常路径必然成功; 仅手动非提权运行时才降级。
+    // **T25 hotfix**:admin 缺失时**不再静默成功**(宪法 §5b 关键路径不许假 PASS)。
+    // 任何一项写失败 → 必须返 Err,让用户走 --register-elevated。
     if let Err(e) = write_hklm_tip_tree(&dll) {
-        eprintln!("[register] WARN: HKLM TIP tree not written (needs admin): {e}");
-    } else {
-        eprintln!("[register] HKLM\\..\\TIP tree written (system-wide TIPC enumeration)");
+        return Err(format!(
+            "写 HKLM\\..\\TIP\\{} 树失败: {}\n\
+             修复路径:\n\
+             1. `prisir_tsfsvc.exe --register-elevated` (自动 UAC 提权)\n\
+             2. 或管理员 PowerShell: `Start-Process prisir_tsfsvc.exe -ArgumentList '--register' -Verb RunAs`\n\
+             没 HKLM TIP 树时 Settings → 添加键盘 列表里看不到 Prisir(已实测)。",
+            CLSID_PRISIR_IME_STR, e
+        ));
     }
+    eprintln!("[register] HKLM\\..\\TIP 树已写入(系统级 TIPC 枚举可见)");
 
     // ---- 2026-09-05: 清历史误写的 HKLM\..\CTF\Assemblies\{Prisir CLSID} 裸键 ----
     // 见 cleanup_malformed_hklm_assemblies 注释 — 该裸键非本代码写入,是历史残留,
@@ -871,9 +814,9 @@ pub fn do_register(dll_path: &str) -> Result<RegisterResult, String> {
     // LanguageProfile)。失败不致命(注册表已写入,下次用户重启 explorer 或
     // reboot 时 TIPC 仍会枚举;但 enable 状态没改,默认 Disabled)。
     if let Err(e) = call_itf_register_api(&dll) {
-        eprintln!("[register] WARN: ITfInputProcessorProfiles COM API failed: {}", e);
-        eprintln!("[register]   Registry written. TIPC will enumerate the TIP after reboot / explorer restart,");
-        eprintln!("[register]   but enabling via Settings UI is still required for full activation.");
+        eprintln!("[register] WARN: ITfInputProcessorProfiles COM API 失败: {}", e);
+        eprintln!("[register]   注册表已写入。下次 reboot / 重启 explorer 后 TIPC 会枚举 TIP,");
+        eprintln!("[register]   但 Assemblies 与 EnableLanguageProfile 仍要靠 Settings UI 加输入法才能写入。");
     } else {
         eprintln!("[register] ITfInputProcessorProfiles::Register OK");
     }
@@ -913,7 +856,6 @@ fn parse_guid(s: &str) -> Result<windows::core::GUID, String> {
 /// 是 unsafe raw 方法,直接当 HRESULT 处理(`Result::err().code()` 可读 hr 值)。
 fn call_itf_register_api(dll_path: &str) -> Result<(), String> {
     use std::ffi::OsStr;
-use std::os::windows::ffi::OsStringExt;
     use std::os::windows::ffi::OsStrExt;
 
     let profile_cls = parse_guid(CLSID_PRISIR_IME_STR)?;
@@ -1372,7 +1314,7 @@ fn cleanup_malformed_hklm_assemblies() {
     unsafe {
         let status = RegDeleteTreeW(HKEY_LOCAL_MACHINE, PCWSTR(w.as_ptr()));
         match status.0 {
-            0 => eprintln!("[register] cleaned stale HKLM\\..\\CTF\\Assemblies\\{CLSID_PRISIR_IME_STR} key"),
+            0 => eprintln!("[register] 已清理历史误写 HKLM\\..\\CTF\\Assemblies\\{CLSID_PRISIR_IME_STR} 裸键"),
             2 => {} // 不存在 = 干净, 静默
             code => eprintln!(
                 "[register] WARN: 清理 HKLM Assemblies 裸键失败 {:?}(不致命, 仅残留历史误写)",
@@ -1387,7 +1329,7 @@ pub fn do_unregister() -> Result<(), String> {
     // 因为恢复的备份(AsmPrevDefault/AsmPrevProfile)存在 TIP 树根下,删树就没了。
     restore_asm_incumbent();
 
-    let hkcu = open_hkcu(KEY_WRITE)
+    let hkcu = open_hkcu(KEY_WRITE.0)
         .map_err(|e| format!("RegOpenCurrentUser(KEY_WRITE) 失败: {:?}", WIN32_ERROR(e.0)))?;
 
     let hkcu_keys = [
@@ -1452,7 +1394,7 @@ pub struct RegStatus {
 }
 
 pub fn do_status() -> Result<RegStatus, String> {
-    let hkcu = open_hkcu(KEY_READ)
+    let hkcu = open_hkcu(KEY_READ.0)
         .map_err(|e| format!("RegOpenCurrentUser(KEY_READ) 失败: {:?}", WIN32_ERROR(e.0)))?;
 
     let tip = format!(r"SOFTWARE\Microsoft\CTF\TIP\{CLSID_PRISIR_IME_STR}");
@@ -1654,7 +1596,6 @@ pub fn do_enum_profiles() -> Result<(), String> {
 /// 真正走 `ITfInputProcessorProfileMgr::RegisterProfile`(同 COM 类 QI 出的新接口)。
 pub fn do_register_profile(dll_path: &str) -> Result<(), String> {
     use std::ffi::OsStr;
-use std::os::windows::ffi::OsStringExt;
     use std::os::windows::ffi::OsStrExt;
 
     let profile_cls = parse_guid(CLSID_PRISIR_IME_STR)?;
@@ -1719,7 +1660,7 @@ use std::os::windows::ffi::OsStringExt;
 }
 
 fn set_enable_dword(v: u32) -> Result<(), String> {
-    let hkcu = open_hkcu(KEY_WRITE)
+    let hkcu = open_hkcu(KEY_WRITE.0)
         .map_err(|e| format!("RegOpenCurrentUser(KEY_WRITE) 失败: {:?}", WIN32_ERROR(e.0)))?;
 
     // T9 hotfix #2: Enable DWORD 不再写在父 key, 而是在 LanguageProfile 子 key:

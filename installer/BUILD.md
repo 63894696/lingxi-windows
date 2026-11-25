@@ -26,11 +26,11 @@ MSVC 环境经 `installer/_cargo_release.bat` 桥接（Git Bash 调 cmd 时嵌�
 
 ## 2. 版本号单一来源
 
-`prisIragent_ime/VERSION.txt` 的 `PRIMARY_VERSION` 是唯一来源：
+`prisiragent_ime/VERSION.txt` 的 `PRIMARY_VERSION` 是唯一来源：
 
 | 位置 | 角色 |
 |---|---|
-| `prisIragent_ime/VERSION.txt` | **源**（改这里） |
+| `prisiragent_ime/VERSION.txt` | **源**（改这里） |
 | `installer/stage/VERSION.txt` | 生成（构建脚本复制，已 gitignore） |
 | NSIS `VERSION` define | 由脚本 `/DVERSION=` 传入（脚本内默认值只作兜底） |
 | 根 `VERSION.txt` | Android 端版本号来源（独立，别混） |
@@ -42,9 +42,9 @@ MSVC 环境经 `installer/_cargo_release.bat` 桥接（Git Bash 调 cmd 时嵌�
 | 产物 | 来源 crate | stage 名 | 说明 |
 |---|---|---|---|
 | `prisir_ime.dll` | `prisir_ime` | 同名 | 引擎，37 个 C 导出 |
-| `prisiragent_ime.dll` | `prisIragent_ime` | **`prisir_ime_tsf.dll`** | TSF COM 外壳，13 个导出（5 COM + 8 `prisir_tsf_*`） |
-| `prisir_tsfsvc.exe` | `prisIragent_ime` | 同名 | 控制壳（--register/--daemon/--status…） |
-| `prisir_hw.exe` | `prisIragent_ime`（`--features hw`） | 同名 | 手写识别独立进程（ort 运行时加载 onnxruntime） |
+| `prisiragent_ime.dll` | `prisiragent_ime` | **`prisir_ime_tsf.dll`** | TSF COM 外壳，13 个导出（5 COM + 8 `prisir_tsf_*`） |
+| `prisir_tsfsvc.exe` | `prisiragent_ime` | 同名 | 控制壳（--register/--daemon/--status…） |
+| `prisir_hw.exe` | `prisiragent_ime`（`--features hw`） | 同名 | 手写识别独立进程（ort 运行时加载 onnxruntime） |
 
 > 文件名 `prisir_ime_tsf.dll` **不能改**：注册表 `InprocServer32` 与 NSIS 都按这个名字取。
 > 2026-11 的事故就出在这：crate 改名后产物叫 `prisiragent_ime.dll`，脚本仍拷旧名，
@@ -90,16 +90,9 @@ python installer/check_release.py exe     installer/LingxiIME-*-Setup.exe
 | beta.27 | `LingxiIME-Windows-x64-1.0.0-beta.27-beta-Setup.exe` | 341,927,043 B | 引擎排序：精确全拼命中优先（`duomotai → 多模态`）+ 模糊音候选不再被截断 |
 | beta.28 | `LingxiIME-Windows-x64-1.0.0-beta.28-beta-Setup.exe` | 341,882,578 B | 词库窗接入黑/白名单：「屏蔽 / 置顶 / 解除」+ 行标记 `[禁]/[顶]` |
 | beta.29 | `LingxiIME-Windows-x64-1.0.0-beta.29-beta-Setup.exe` | 345,813,141 B | 反向混拼提速 341→35~60ms（`length(jp)` 约束 + `substr(key,-3)` 表达式索引） |
-| beta.30 | `LingxiIME-Windows-x64-1.0.0-beta.30-beta-Setup.exe` | 328,521,580 B | 阶段包 |
-| beta.31 | `LingxiIME-Windows-x64-1.0.0-beta.31-beta-Setup.exe` | 320,702,441 B | 语音听写伪流式预览（录音中浮窗刷新；与 Linux 0.3.2 对齐） |
-| beta.32 | `LingxiIME-Windows-x64-1.0.0-beta.32-beta-Setup.exe` | 320,834,551 B | 单包装完即用确认版（全量词库+SenseVoice）；与 Linux 0.3.3 / Android α.5 对齐 |
-| beta.33 | `LingxiIME-Windows-x64-1.0.0-beta.33-beta-Setup.exe` | 318,588,455 B | 净化长词组后的词库（~108 万 phrase）+ SenseVoice；与 Linux 0.3.4 / Android α.6 对齐 |
-| beta.34 | `LingxiIME-Windows-x64-1.0.0-beta.34-beta-Setup.exe` | 318,403,252 B | 空格整句不再盖整词；de 全拼优先；开放 API 可拉伸+开关；语音 exe 修 sqlite3；词库 round3 |
-| beta.35 | `LingxiIME-Windows-x64-1.0.0-beta.35-beta-Setup.exe` | 318,424,973 B | 多字首选不被字拼覆盖；干扰词降权；开放 API 端口输入+应用；语音多尺寸高清图标 |
-| beta.36 | `LingxiIME-Windows-x64-1.0.0-beta.36-beta-Setup.exe` | 316,942,028 B | 空格彻底取消字拼覆盖+修 min→legacy 回落；语音改用拼音图标测试 |
 
-> 打包入口：`bash installer/build_release.sh --bump <ver>`。语音 exe 需先在
-> `~/voice_input` 用 PyInstaller 冻结并拷入 `installer/stage/voice/lingxi_voice.exe`。
+> **2026-11-17 起暂停出包**（用户决定："安装包等完整开发结束再打包"）。此后 stage 保持最新，
+> 词库已含 `idx_phrase_value`（314MB）；恢复打包时直接 `bash installer/build_release.sh --bump <ver>`。
 
 ## 7. 已知缺口（写清楚，别让它悄悄回归）
 

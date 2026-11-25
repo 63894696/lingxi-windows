@@ -1,4 +1,4 @@
-//! 词库访问(rusqlite 读 ciku.db)。逻辑对齐 Python database.py。
+﻿//! 词库访问(rusqlite 读 ciku.db)。逻辑对齐 Python database.py。
 //! 表:phrase(jp,key,value,weight) pinyin(jp,key,value,weight) wubi86(key,value,weight)。
 //! 注意:pinyin 表上游混入约 31 万词组,查单字必须 LENGTH(value)=1 过滤。
 
@@ -50,6 +50,56 @@ fn next_prefix(prefix: &str) -> String {
     chars[..=i as usize].iter().collect()
 }
 
+/// 混拼前缀匹配:`pinyin` 的每个音节贡献「完整拼写」或「首字母」,`q` 必须被恰好消费完
+/// (最后一个音节允许只打了前缀 —— 用户还在输入)。
+///
+/// 例(音节 ya ke bi cai xiang):
+///   ykbcx / yakebicx / yakebic / yakebi / yakebicaixiang → true
+///   yakebix(跳过 cai 直接打 x 的位置)                  → false
+pub(crate) fn abbrev_prefix_match(sy: &crate::syllable::Syllables, pinyin: &str, q: &str) -> bool {
+    let Some(segs) = sy.segments(pinyin) else {
+        return false;
+    };
+    if segs.is_empty() {
+        return false;
+    }
+    let qb = q.as_bytes();
+    let n = qb.len();
+    let mut reach = vec![false; n + 1];
+    reach[0] = true;
+    for s in &segs {
+        let sb = s.as_bytes();
+        let mut next = vec![false; n + 1];
+        for j in 0..=n {
+            if !reach[j] {
+                continue;
+            }
+            if j == n {
+                next[n] = true; // 已打完 → 后面还剩几个音节也无所谓
+                continue;
+            }
+            // 1) 整个音节打全
+            if n - j >= sb.len() && &qb[j..j + sb.len()] == sb {
+                next[j + sb.len()] = true;
+            }
+            // 2) 只打首字母
+            if qb[j] == sb[0] {
+                next[j + 1] = true;
+            }
+            // 3) 正在打这个音节(只打了它的前半段,且后面没有更多输入)
+            let k = (n - j).min(sb.len());
+            if k > 0 && k < sb.len() && qb[j..j + k] == sb[..k] {
+                next[n] = true;
+            }
+        }
+        if !next.iter().any(|b| *b) {
+            return false;
+        }
+        reach = next;
+    }
+    reach[n]
+}
+
 impl CikuDb {
     pub fn open(path: &str) -> SqlResult<Self> {
         // 主库只读打开(2026-09-03 修「学习写库→索引失效重建 69s」):
@@ -74,8 +124,17 @@ impl CikuDb {
         // 学习记录 + 黑白名单都写 user.db。打开失败不致命(学习/名单静默失效,打字不受影响),
         // 但**路径必须落在用户可写目录**:装到 C:\Program Files 时主库目录只读,
         // 老实现把 user.db 放在主库旁边 → 普通用户永远写不进去 → 频率学习静默失效。
-        let user_conn = Self::open_user_db(path).ok();
-        Ok(CikuDb { conn, user_conn })
+        // 2026-11-25:老库(无 alias 列)打开时顺手做一次手工词规范化,
+        // 把「只存了简拼」「全拼与简拼各一行」的老数据修成 1 主行 + N 别名。
+        let (user_conn, need_normalize) = match Self::open_user_db(path) {
+            Ok((c, added)) => (Some(c), added),
+            Err(_) => (None, false),
+        };
+        let db = CikuDb { conn, user_conn };
+        if need_normalize {
+            db.normalize_manual_rows();
+        }
+        Ok(db)
     }
 
     /// 确保黑白名单表存在。
@@ -113,7 +172,7 @@ impl CikuDb {
     ///   1. 环境变量 `PRISIR_IME_DATA`（测试/打包/自定义）
     ///   2. 主库同目录（可写时；开发/stage/绿色版行为不变）
     ///   3. Windows: `%LOCALAPPDATA%\PrisirIME`；Linux: `$XDG_DATA_HOME/prisir`（默认 `~/.local/share/prisir`）
-    fn open_user_db(main_path: &str) -> SqlResult<Connection> {
+    fn open_user_db(main_path: &str) -> SqlResult<(Connection, bool)> {
         let dir = Self::user_data_dir(main_path);
         let _ = std::fs::create_dir_all(&dir);
         let stem = std::path::Path::new(main_path)
@@ -128,6 +187,8 @@ impl CikuDb {
                 value TEXT NOT NULL,
                 weight INTEGER NOT NULL DEFAULT 0,
                 seq INTEGER NOT NULL DEFAULT 0,
+                pos INTEGER NOT NULL DEFAULT 0,
+                alias INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(key, value)
             );
             CREATE TABLE IF NOT EXISTS word_blacklist (
@@ -144,11 +205,55 @@ impl CikuDb {
         )?;
         // 对 2026-09-04 之前建的旧 user.db(无 seq 列)补列;已存在则忽略错误。
         let _ = uc.execute_batch("ALTER TABLE user_word ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;");
+        // 2026-11-24 快捷造词:pos = 手工造词指定的候选位(1 起;0 = 未指定)。
+        // seq 与 pos 的分工见 add_manual_word 的注释;老库无此列时全部默认 0,行为不变。
+        let _ = uc.execute_batch("ALTER TABLE user_word ADD COLUMN pos INTEGER NOT NULL DEFAULT 0;");
+        // 2026-11-25:alias = 「非主 key」行标记(简拼别名 / 用户手填的额外编码)。
+        // 为什么需要这张别名行:简拼查询只按 key 精确匹配,手工词若只存全拼,
+        // 打 ykbcx 一个候选都出不来(测试机实测)。别名行只参与精确命中,
+        // **不**参与词库列表与混拼扫描,否则一个词会显示/命中两次。
+        // ALTER 成功 = 老库首次升级 → 调用方跑一次 normalize_manual_rows() 修历史数据。
+        let alias_added = uc
+            .execute_batch("ALTER TABLE user_word ADD COLUMN alias INTEGER NOT NULL DEFAULT 0;")
+            .is_ok();
         eprintln!("[prisir_ime] user db: {}", user_path.display());
         // 老安装(2026-11-17 之前)把 user.db 放在主库旁边。位置一变就得搬一次，
         // 否则用户之前学过的词(可能几千条)全部"消失"——用户感知就是"越用越不准了"。
         Self::migrate_legacy_user_db(main_path, &uc, &user_path);
-        Ok(uc)
+        // 2026-11-25:词库窗已去掉「屏蔽/置顶/解除」。旧版「屏蔽」写入的黑名单
+        // 仍会藏词且无解除入口。一次性清掉非「用户删除」软删条目，并清空白名单。
+        Self::clear_legacy_shield_lists(&uc);
+        Ok((uc, alias_added))
+    }
+
+    /// 清空旧「屏蔽/置顶」名单；保留 reason='用户删除'（只读安装上删除主库词的软删）。
+    fn clear_legacy_shield_lists(uc: &Connection) {
+        let already: bool = uc
+            .query_row(
+                "SELECT 1 FROM meta WHERE key='cleared_legacy_shield_v1'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if already {
+            return;
+        }
+        let black = uc
+            .execute(
+                "DELETE FROM word_blacklist WHERE reason IS NULL OR reason='' OR reason!='用户删除'",
+                [],
+            )
+            .unwrap_or(0);
+        let white = uc.execute("DELETE FROM word_whitelist", []).unwrap_or(0);
+        let _ = uc.execute(
+            "INSERT OR REPLACE INTO meta(key,value) VALUES('cleared_legacy_shield_v1','1')",
+            [],
+        );
+        if black > 0 || white > 0 {
+            eprintln!(
+                "[prisir_ime] cleared legacy shield lists: blacklist={black} whitelist={white}"
+            );
+        }
     }
 
     /// 把老位置的 user.db（主库同目录）并入新位置。只做一次：搬完把老文件改名 `.migrated`。
@@ -373,6 +478,31 @@ impl CikuDb {
         Ok(rows.filter_map(|x| x.ok()).collect())
     }
 
+    /// key 前缀查询,**并带出 key 本身**(混拼「全拼头 + 尾部首字母」校验用,2026-11-25)。
+    ///
+    /// 与 `query_phrase_by_key_prefix` 同一条索引范围,只是多回传 key:
+    /// 调用方要把 `key` 去掉已打的前半段,再判断剩下的音节首字母是否正好等于尾部输入
+    /// (`limancx` → key=`limancaixiang`,头 `liman`,尾 `cx` = c(ai)+x(iang))。
+    /// 这类输入此前在按键路径上**没有任何通道**(只有 `--query-test` 的宽松匹配能出),
+    /// 用户实测「造词提示说混拼能命中,实际打不出来」。
+    pub fn query_phrase_with_key_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> SqlResult<Vec<(String, String, i64)>> {
+        // 刻意**不带** ORDER BY weight DESC:短前缀(如 "shuxu")的 key 范围有几万行,
+        // 排序要把整段扫完(实测 70ms+)。按键路径只需要「这段范围里有没有能匹配尾部的词」,
+        // 按 key 顺序取前 N 行即可(索引顺序扫描,LIMIT 就停),排序交给 Rust 侧。
+        let mut st = self.conn.prepare(
+            "SELECT value, key, weight FROM phrase WHERE key >= ?1 AND key < ?2 LIMIT ?3",
+        )?;
+        let rows = st.query_map(
+            rusqlite::params![prefix, next_prefix(prefix), limit as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        Ok(rows.filter_map(|x| x.ok()).collect())
+    }
+
     /// 反向混拼:jp 首字母=first(范围),结果集内过滤 key 后缀 rest(sjie→世界)。
     pub fn query_phrase_reverse_mixed(&self, first: &str, rest: &str, limit: usize) -> SqlResult<Vec<Weighted>> {
         // 首字母 + 后全拼（sjie → 世界）。这条是**唯一**的百毫秒级慢查询：
@@ -527,7 +657,226 @@ impl CikuDb {
         Ok(())
     }
 
-    /// 查学习词:某拼音**前缀**下用户学过的所有词 → [(value, seq)](按 seq 升序,先学在前)。
+    /// 手工造词(2026-11-24,借鉴影子输入法「快捷造词」)。
+    ///
+    /// **为什么另开一条写入口,而不是复用 add_user_word:**
+    /// - 自动学成词要的是「学过的永远在最前」→ seq>0 + 固定 LEARN_PIN_WEIGHT + 按学习次序
+    ///   置顶(用户 2026-09-04 明确要这套语义,本次不动)。
+    /// - 手工造词要的是「我说了算排第几」→ 用 `pos` 直接表达候选位。
+    ///
+    /// **为什么不用权重表达位置:** 现网安装主库在 Program Files 下只读,
+    /// `main_upsert_word` 会退化成写 user_word,而 user_word 的 weight 被引擎忽略
+    /// (统一给 LEARN_PIN_WEIGHT)→ 按权重算出来的「第 N 位」在真实安装上完全失效。
+    /// 用 pos 在候选组装阶段插位,与主库可写与否无关。
+    ///
+    /// 约定:`seq = 0` 表示「手工词」,`user_words_for` 只取 seq>0,两条路径不会重复。
+    /// 同一个词若之前是自动学成的(seq>0),手工再造词会把它改成 seq=0 并按 pos 排位。
+    ///
+    /// **编码规范化(2026-11-25,测试机反馈后补)**:简拼查询只按 `key` 精确匹配,
+    /// 只写全拼 key 时打 `ykbcx` 一个候选都没有;只写简拼 key 时打全拼又没有。
+    /// 所以这里写「1 条主行 + N 条别名行」:
+    ///   - 主行 `alias=0`:全拼(算得出来时);算不出来才退回调用方给的编码;
+    ///   - 别名 `alias=1`:简拼、以及用户显式指定的自定义编码。
+    /// 例:("ykbcx","雅可比猜想") → 主行 yakebicaixiang + 别名 ykbcx。
+    pub fn add_manual_word(&self, pinyin: &str, word: &str, pos: i64) -> SqlResult<()> {
+        let Some(uc) = &self.user_conn else {
+            return Ok(());
+        };
+        let word = word.trim();
+        if word.is_empty() {
+            return Ok(());
+        }
+        let pos = pos.clamp(1, 50);
+        let given = pinyin.trim().to_ascii_lowercase();
+        let full = self.pinyin_for_word(word);
+        // 用户给的是不是「完整全拼」:能被音节表恰好切完才算。简拼/混拼/自定义码都不算。
+        let given_is_full = Self::jianpin_of_full(&given).is_some();
+
+        let (primary, extra) = match &full {
+            Some(f) if given_is_full => (given.clone(), None),
+            Some(f) => (f.clone(), if given.is_empty() || *f == given { None } else { Some(given.clone()) }),
+            None => (given.clone(), None),
+        };
+        if primary.is_empty() {
+            return Ok(());
+        }
+
+        let mut rows: Vec<(String, i64)> = vec![(primary.clone(), 0)];
+        if let Some(jp) = Self::jianpin_of_full(&primary) {
+            rows.push((jp, 1));
+        }
+        if let Some(ex) = extra {
+            if !rows.iter().any(|(k, _)| *k == ex) {
+                rows.push((ex, 1));
+            }
+        }
+
+        // 先清掉这个词的手工记录再整组写入:换过编码时不留下打得出、又说不清来源的旧 key。
+        // 只清 seq=0,自动学成的记录不动。
+        let _ = uc.execute_batch("BEGIN IMMEDIATE;");
+        let mut result = uc.execute(
+            "DELETE FROM user_word WHERE value=?1 AND seq=0",
+            rusqlite::params![word],
+        ).map(|_| ());
+        if result.is_ok() {
+            for (k, alias) in &rows {
+                result = uc
+                    .execute(
+                        "INSERT INTO user_word(key,value,weight,seq,pos,alias) VALUES(?1,?2,?3,0,?4,?5)
+                         ON CONFLICT(key,value) DO UPDATE SET seq=0, pos=excluded.pos, alias=excluded.alias",
+                        rusqlite::params![k, word, LEARN_PIN_WEIGHT, pos, alias],
+                    )
+                    .map(|_| ());
+                if result.is_err() {
+                    break;
+                }
+            }
+        }
+        match &result {
+            Ok(()) => {
+                let _ = uc.execute_batch("COMMIT;");
+            }
+            Err(_) => {
+                let _ = uc.execute_batch("ROLLBACK;");
+            }
+        }
+        result
+    }
+
+    /// 全拼 → 简拼,**且要求 `pinyin` 能被音节表恰好切分完**(证明它是全拼)。
+    /// 简拼/混拼/自定义码返回 None —— 这样调用方不会给 "ykbcx" 编出 "y" 这种假主行。
+    fn jianpin_of_full(pinyin: &str) -> Option<String> {
+        if pinyin.len() < 2 || !pinyin.bytes().all(|b| b.is_ascii_lowercase()) {
+            return None;
+        }
+        let sy = crate::syllable::Syllables::new();
+        let segs = sy.segments(pinyin)?; // 只接受「整串被恰好消费完」
+        if segs.len() < 2 {
+            return None;
+        }
+        let jp: String = segs.iter().filter_map(|s| s.chars().next()).collect();
+        if jp.is_empty() || jp == pinyin { None } else { Some(jp) }
+    }
+
+    /// 一次性数据修复(只在 alias 列首次加入时跑)。
+    /// - 「全拼 + 简拼各一行」→ 简拼行标别名;
+    /// - 只存了简拼 key → 补一条全拼主行,原行降为别名;
+    /// - 算不出全拼(生僻字)→ 原样保留,不猜。
+    fn normalize_manual_rows(&self) {
+        let Some(uc) = &self.user_conn else { return };
+        let rows: Vec<(String, String, i64)> = {
+            let Ok(mut st) = uc.prepare("SELECT key, value, pos FROM user_word WHERE seq=0 AND pos>0") else {
+                return;
+            };
+            let Ok(it) = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) else {
+                return;
+            };
+            it.filter_map(|x| x.ok()).collect()
+        };
+        let mut by_value: std::collections::HashMap<String, Vec<(String, i64)>> = std::collections::HashMap::new();
+        for (k, v, p) in rows {
+            by_value.entry(v).or_default().push((k, p));
+        }
+        for (value, entries) in by_value {
+            // 已有的全拼行优先;没有就用词条反推。
+            let full = entries
+                .iter()
+                .map(|(k, _)| k.clone())
+                .find(|k| Self::jianpin_of_full(k).is_some())
+                .or_else(|| self.pinyin_for_word(&value));
+            let Some(full) = full else { continue };
+            if Self::jianpin_of_full(&full).is_none() {
+                continue;
+            }
+            let pos = entries.iter().map(|(_, p)| *p).min().unwrap_or(1).clamp(1, 50);
+            if !entries.iter().any(|(k, _)| *k == full) {
+                eprintln!("[prisir_ime] 手工词补全拼: {value} → {full}");
+            }
+            let _ = uc.execute(
+                "INSERT INTO user_word(key,value,weight,seq,pos,alias) VALUES(?1,?2,?3,0,?4,0)
+                 ON CONFLICT(key,value) DO UPDATE SET alias=0",
+                rusqlite::params![full, value, LEARN_PIN_WEIGHT, pos],
+            );
+            // 其余 key 一律降为别名(简拼 / 用户自定义码)。
+            for (k, _) in &entries {
+                if *k != full {
+                    let _ = uc.execute(
+                        "UPDATE user_word SET alias=1 WHERE key=?1 AND value=?2",
+                        rusqlite::params![k, value],
+                    );
+                }
+            }
+        }
+    }
+
+    /// 某拼音下的手工造词 → [(词, pos)](pos 升序;同 pos 按写入先后)。
+    /// 供 engine 在候选组装阶段按位插入。
+    pub fn manual_words_for(&self, pinyin: &str) -> Vec<(String, i64)> {
+        let Some(uc) = &self.user_conn else {
+            return Vec::new();
+        };
+        let mut st = match uc.prepare(
+            "SELECT value, pos FROM user_word WHERE key=?1 AND seq=0 AND pos>0 ORDER BY pos ASC, rowid ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = match st.query_map(rusqlite::params![pinyin], |r| Ok((r.get(0)?, r.get(1)?))) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        rows.filter_map(|x| x.ok()).collect()
+    }
+
+    /// 手工造词的**主行**(全拼 key,alias=0)→ [(拼音, 词, pos)]。
+    /// 混拼扫描用:别名行不参与,否则同一个词会被算两次。
+    /// LIMIT 201:超过 200 条就放弃混拼(见 `manual_words_mixed`),这里顺手把扫描截断。
+    pub fn manual_words_all(&self) -> Vec<(String, String, i64)> {
+        let Some(uc) = &self.user_conn else {
+            return Vec::new();
+        };
+        let mut st = match uc.prepare(
+            "SELECT key, value, pos FROM user_word WHERE seq=0 AND pos>0 AND alias=0 \
+             ORDER BY pos ASC, rowid ASC LIMIT 201",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = match st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        rows.filter_map(|x| x.ok()).collect()
+    }
+
+    /// 混拼匹配:`yakebicx` 这类「前几个音节打全、后面打首字母」的输入。
+    ///
+    /// 为什么不能只靠别名行:别名只覆盖**纯简拼**(ykbcx)与**纯全拼**,混着打时
+    /// key 一个都对不上。代价是每次要扫一遍手工词(有上限),所以词表很大时直接放弃。
+    pub fn manual_words_mixed(&self, query: &str) -> Vec<(String, i64)> {
+        let q = query;
+        if q.len() < 3 || !q.bytes().all(|b| b.is_ascii_lowercase()) {
+            return Vec::new();
+        }
+        let rows = self.manual_words_all();
+        // 超过上限不扫:手工词通常是几十条,真到几百条说明用法已经变了,
+        // 宁可漏混拼,也不让每次按键多几毫秒。
+        if rows.len() > 200 {
+            return Vec::new();
+        }
+        let sy = crate::syllable::Syllables::new();
+        let first = q.as_bytes()[0];
+        let mut out: Vec<(String, i64)> = Vec::new();
+        for (key, value, pos) in rows {
+            if key.as_bytes().first().copied() != Some(first) {
+                continue;
+            }
+            if abbrev_prefix_match(&sy, &key, q) && !self.is_blacklisted(&value) {
+                out.push((value, pos));
+            }
+        }
+        out
+    }
     ///
     /// 用途(2026-11-20)：九宫格按**读音**查学成词，而学习时记的 key 是**词的完整读音**
     /// （"米高扬" → "migaoyang"）。九宫格读音 "mi gao" 只是它的一个**前缀** →
@@ -555,11 +904,14 @@ impl CikuDb {
     /// 查学习词:某拼音下用户学过的所有词 → [(value, seq)](按 seq 升序,先学在前)。
     /// 供 engine 查询合并用(学成置顶+位置锁定)。无 user.db 时返空。
     /// 返回的 weight 由 engine 统一给 LEARN_PIN_WEIGHT,这里只带 seq 用于稳定排序。
+    ///
+    /// **只取 seq>0**(2026-11-24):seq=0 是「手工造词」,位置由 pos 决定、走
+    /// engine 的插位逻辑;若不排除,同一个词会被「置顶 + 插位」各处理一次。
     pub fn user_words_for(&self, pinyin: &str) -> Vec<UserWord> {
         let Some(uc) = &self.user_conn else {
             return Vec::new();
         };
-        let mut st = match uc.prepare("SELECT value, seq FROM user_word WHERE key=?1 ORDER BY seq ASC") {
+        let mut st = match uc.prepare("SELECT value, seq FROM user_word WHERE key=?1 AND seq>0 ORDER BY seq ASC") {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -570,15 +922,78 @@ impl CikuDb {
         rows.filter_map(|x| x.ok()).collect()
     }
 
-    /// 删除指定学习词(词库管理窗口用)。返受影响行数。
+    /// 删除指定词(词库管理窗口用)。返受影响行数。
+    ///
+    /// 手工词会存「全拼主行 + 简拼别名行」,只删一行会留下一条打得出、又删不掉的
+    /// 游魂 → 这里先按 (key,value) 删,再把这个词剩下的手工行(seq=0)一并清掉。
+    /// 自动学成的记录(seq>0)只有在 key+value 完全对得上时才删,不误伤。
     pub fn remove_user_word(&self, pinyin: &str, word: &str) -> SqlResult<usize> {
         let Some(uc) = &self.user_conn else {
             return Ok(0);
         };
-        uc.execute(
+        let mut n = uc.execute(
             "DELETE FROM user_word WHERE key=?1 AND value=?2",
             rusqlite::params![pinyin, word],
-        )
+        )?;
+        n += uc.execute(
+            "DELETE FROM user_word WHERE value=?1 AND seq=0",
+            rusqlite::params![word],
+        )?;
+        Ok(n)
+    }
+
+    /// 按**词本身**删除(不需要知道当初学习的编码)。返受影响行数。
+    ///
+    /// 2026-11-25 用户反馈「同样的字母输入找不到要删的词,用户无法清理词库」:
+    /// 学习行的 key 是**输入串**,而用户只记得「哪个词是垃圾」,记不得当初打了什么。
+    /// `remove_user_word` 要求 key+value 双向精确,于是清理门槛过高。
+    /// 这里只按 value 删(全部编码行),并**只删学成/手造行**(seq 任意、含 pos 行),
+    /// 不做任何前缀猜测 —— 精确等于该词才删。
+    pub fn remove_user_word_by_value(&self, word: &str) -> SqlResult<usize> {
+        let Some(uc) = &self.user_conn else {
+            return Ok(0);
+        };
+        uc.execute("DELETE FROM user_word WHERE value=?1", rusqlite::params![word])
+    }
+
+    /// 在用户词层(user_word)里搜词 —— 词库管理窗口「清理」用。
+    ///
+    /// 与主库搜索不同,这里数据量只有几千行,可以做**子串**匹配:
+    /// term 命中 key 或 value 任一即可(用户既可能记得词,也可能记得编码)。
+    pub fn search_user_words(&self, term: &str, limit: usize) -> Vec<(String, String, i64)> {
+        let Some(uc) = &self.user_conn else {
+            return Vec::new();
+        };
+        let t = term.trim();
+        let lim = limit.max(1) as i64;
+        if t.is_empty() {
+            // 空搜索 = 列出最近学成的若干条(用 seq 倒序),让用户能看见「刚学进去什么」。
+            let Ok(mut st) = uc.prepare(
+                "SELECT key, value, weight FROM user_word WHERE alias=0 ORDER BY seq DESC, rowid DESC LIMIT ?1",
+            ) else {
+                return Vec::new();
+            };
+            let rows = st
+                .query_map(rusqlite::params![lim], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                })
+                .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            return rows;
+        }
+        let like = format!("%{}%", t);
+        let Ok(mut st) = uc.prepare(
+            "SELECT key, value, weight FROM user_word \
+             WHERE alias=0 AND (key LIKE ?1 OR value LIKE ?1) \
+             ORDER BY (value = ?2) DESC, seq DESC, rowid DESC LIMIT ?3",
+        ) else {
+            return Vec::new();
+        };
+        st.query_map(rusqlite::params![like, t, lim], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        })
+        .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>())
+        .unwrap_or_default()
     }
 
     /// 清空全部学习记录(词库管理窗口「清空学习」用)。
@@ -662,14 +1077,27 @@ impl CikuDb {
 
     /// 列出全部学习词(词库管理窗口列表用) → [(key, value, weight, seq)] 按 seq 升序。
     pub fn list_user_words(&self) -> Vec<(String, String, i64, i64)> {
+        self.list_user_words_with_pos()
+            .into_iter()
+            .map(|(k, v, w, s, _p)| (k, v, w, s))
+            .collect()
+    }
+
+    /// 同 list_user_words,额外带 pos(手工造词的候选位;0 = 非手工词)。
+    /// 词库管理窗口用它把「第N位」显示出来,否则用户看不出自己设过位置。
+    ///
+    /// **只列主行(alias=0)**:手工词会额外存简拼别名行,列出来会让一个词显示成两条。
+    pub fn list_user_words_with_pos(&self) -> Vec<(String, String, i64, i64, i64)> {
         let Some(uc) = &self.user_conn else {
             return Vec::new();
         };
-        let mut st = match uc.prepare("SELECT key, value, weight, seq FROM user_word ORDER BY seq ASC") {
+        let mut st = match uc.prepare(
+            "SELECT key, value, weight, seq, pos FROM user_word WHERE alias=0 ORDER BY seq ASC, pos ASC",
+        ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let rows = match st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))) {
+        let rows = match st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))) {
             Ok(r) => r,
             Err(_) => return Vec::new(),
         };
@@ -1077,6 +1505,46 @@ mod tests {
     }
 
     #[test]
+    fn remove_user_word_by_value_does_not_need_key() {
+        // 2026-11-25 用户投诉:候选里的垃圾词删不掉,因为「同样的字母输入找不到要删的词」。
+        // 学习行 key = 输入串,用户只记得词。按词删除必须能清掉**所有编码行**。
+        let (db, dir) = temp_db();
+        db.add_user_word("limancx", "礼貌你出现", 1).unwrap();
+        db.add_user_word("limanqingchu", "礼貌你出现", 1).unwrap();
+        db.add_user_word("lmcx", "黎曼猜想", 1).unwrap();
+        assert_eq!(db.user_words_for("limancx").len(), 1);
+
+        let n = db.remove_user_word_by_value("礼貌你出现").unwrap();
+        assert_eq!(n, 2, "同一个词的多条编码行都要删掉");
+        assert!(db.user_words_for("limancx").is_empty());
+        assert_eq!(
+            db.user_words_for("lmcx").len(),
+            1,
+            "不能误伤别的词"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_user_words_matches_key_or_value() {
+        // 词库管理窗口靠它把「学习行」合进搜索结果:既支持按拼音找,也支持按词找。
+        let (db, dir) = temp_db();
+        db.add_user_word("yakebicx", "有啊可比出现", 1).unwrap();
+        db.add_user_word("moxing", "模型", 1).unwrap();
+
+        let by_key = db.search_user_words("yakebi", 50);
+        assert_eq!(by_key.len(), 1);
+        assert_eq!(by_key[0].1, "有啊可比出现");
+
+        let by_word = db.search_user_words("出现", 50);
+        assert_eq!(by_word.len(), 1);
+
+        let none = db.search_user_words("完全不存在的串", 50);
+        assert!(none.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn remove_and_clear_user_words() {
         let (db, _d) = temp_db();
         db.add_user_word("nihao", "你好", 1).unwrap();
@@ -1089,5 +1557,196 @@ mod tests {
         assert_eq!(rest[0].0, "你好");
         db.clear_user_words().unwrap();
         assert_eq!(db.user_words_for("nihao").len(), 0, "清空后无学成词");
+    }
+
+    // ── 快捷造词(2026-11-24)────────────────────────────────────────────────
+    // 手工词(pos>0, seq=0)与自动学成词(seq>0)必须是两条互不干扰的路径:
+    //   自动学成 → user_words_for 取出、置顶;
+    //   手工造词 → manual_words_for 取出、按 pos 插位。
+    // 若某天有人把 user_words_for 的 `AND seq>0` 删掉,同一个词会被置顶+插位各处理一次
+    // (候选里出现重复条目)—— 下面第二条用例就是防这个回归。
+
+    #[test]
+    fn manual_word_goes_to_pos_path_not_pin_path() {
+        let (db, dir) = temp_db();
+        db.add_manual_word("bjdx", "北大荒", 3).unwrap();
+        assert_eq!(db.manual_words_for("bjdx"), vec![("北大荒".to_string(), 3)]);
+        assert!(
+            db.user_words_for("bjdx").is_empty(),
+            "手工词不能进学成词置顶路径(会重复)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn learned_word_stays_on_pin_path() {
+        let (db, dir) = temp_db();
+        db.add_user_word("nihao", "你好", 1).unwrap();
+        assert!(db.manual_words_for("nihao").is_empty(), "学成词不该带 pos");
+        assert_eq!(db.user_words_for("nihao").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_word_overrides_previous_learning() {
+        // 先自动学过,再手工造词 → 改成手工语义(seq=0),否则两条路径又重叠。
+        let (db, dir) = temp_db();
+        db.add_user_word("bdh", "北大荒", 1).unwrap();
+        assert_eq!(db.user_words_for("bdh").len(), 1);
+        db.add_manual_word("bdh", "北大荒", 2).unwrap();
+        assert!(db.user_words_for("bdh").is_empty());
+        assert_eq!(db.manual_words_for("bdh"), vec![("北大荒".to_string(), 2)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_words_ordered_by_pos() {
+        let (db, dir) = temp_db();
+        db.add_manual_word("x", "丙", 5).unwrap();
+        db.add_manual_word("x", "甲", 1).unwrap();
+        db.add_manual_word("x", "乙", 3).unwrap();
+        let got: Vec<String> = db.manual_words_for("x").into_iter().map(|(w, _)| w).collect();
+        assert_eq!(got, vec!["甲", "乙", "丙"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pos_is_clamped_to_at_least_one() {
+        // pos=0 是「未指定」的存储值,手工造词传 0 必须落到第 1 位,不能变成"不插位"。
+        let (db, dir) = temp_db();
+        db.add_manual_word("y", "某词", 0).unwrap();
+        assert_eq!(db.manual_words_for("y"), vec![("某词".to_string(), 1)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn user_list_exposes_pos_column() {
+        // 词库管理窗口要显示「第N位」,否则用户看不出自己设过位置。
+        let (db, dir) = temp_db();
+        db.add_manual_word("bdh", "北大荒", 4).unwrap();
+        db.add_user_word("nihao", "你好", 1).unwrap();
+        let rows = db.list_user_words_with_pos();
+        let manual = rows.iter().find(|r| r.1 == "北大荒").expect("手工词在列表里");
+        assert_eq!(manual.4, 4, "pos 必须带出来");
+        let learned = rows.iter().find(|r| r.1 == "你好").expect("学成词在列表里");
+        assert_eq!(learned.4, 0, "学成词 pos=0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 简拼别名 / 混拼(2026-11-25,测试机反馈后补)──────────────────────────
+    // 背景:简拼查询只按 key 精确匹配。只存全拼 key 时打 ykbcx 一个候选都没有。
+    // 修法:写一条全拼主行 + 一条简拼别名行;列表与混拼扫描只认主行。
+
+    /// 建一个带单字拼音表的主库,让 `pinyin_for_word` 能反推出全拼。
+    fn temp_db_with_pinyin(chars: &[(&str, &str)]) -> (CikuDb, std::path::PathBuf) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "prisir_dbpy_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("ciku.db");
+        {
+            let c = Connection::open(&main).unwrap();
+            c.execute_batch(
+                "CREATE TABLE phrase(jp TEXT,key TEXT,value TEXT,weight INTEGER);
+                 CREATE TABLE pinyin(jp TEXT,key TEXT,value TEXT,weight INTEGER);",
+            )
+            .unwrap();
+            for (k, ch) in chars {
+                c.execute(
+                    "INSERT INTO pinyin(jp,key,value,weight) VALUES(?1,?1,?2,100)",
+                    rusqlite::params![k, ch],
+                )
+                .unwrap();
+            }
+        }
+        let db = CikuDb::open(main.to_str().unwrap()).unwrap();
+        (db, dir)
+    }
+
+    fn yakebi_chars() -> Vec<(&'static str, &'static str)> {
+        vec![("ya", "雅"), ("ke", "可"), ("bi", "比"), ("cai", "猜"), ("xiang", "想")]
+    }
+
+    #[test]
+    fn manual_word_with_jianpin_writes_full_key_and_alias() {
+        let (db, dir) = temp_db_with_pinyin(&yakebi_chars());
+        // 调用方只给简拼(造词窗口/Agent 常见形态)
+        db.add_manual_word("ykbcx", "雅可比猜想", 1).unwrap();
+        assert_eq!(
+            db.manual_words_for("yakebicaixiang"),
+            vec![("雅可比猜想".to_string(), 1)],
+            "全拼必须能查到"
+        );
+        assert_eq!(
+            db.manual_words_for("ykbcx"),
+            vec![("雅可比猜想".to_string(), 1)],
+            "简拼别名必须能查到(这次测试机报的就是这条)"
+        );
+        // 主行只有一条 → 列表/混拼不会把同一个词算两次
+        let all = db.manual_words_all();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "yakebicaixiang");
+        assert_eq!(db.list_user_words_with_pos().len(), 1, "别名行不能出现在词库列表");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_word_explicit_full_pinyin_also_gets_jianpin_alias() {
+        let (db, dir) = temp_db_with_pinyin(&yakebi_chars());
+        db.add_manual_word("yakebicaixiang", "雅可比猜想", 2).unwrap();
+        assert_eq!(db.manual_words_for("ykbcx").len(), 1, "给全拼也要能打简拼");
+        assert_eq!(db.manual_words_for("yakebicaixiang").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_word_custom_code_is_kept_as_alias() {
+        // 用户显式给一个不是音节切分的编码(zhrmghg 这类)-> 全拼做主行,自定义码做别名。
+        let (db, dir) = temp_db_with_pinyin(&yakebi_chars());
+        db.add_manual_word("custom", "雅可比猜想", 1).unwrap();
+        assert_eq!(db.manual_words_for("custom").len(), 1);
+        assert_eq!(db.manual_words_for("yakebicaixiang").len(), 1);
+        assert_eq!(db.manual_words_for("ykbcx").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_manual_word_clears_alias_rows() {
+        let (db, dir) = temp_db_with_pinyin(&yakebi_chars());
+        db.add_manual_word("ykbcx", "雅可比猜想", 1).unwrap();
+        // 用简拼删(Agent/ipc 就是这么调的)
+        let n = db.remove_user_word("ykbcx", "雅可比猜想").unwrap();
+        assert_eq!(n, 2, "主行 + 别名行都要删");
+        assert!(db.manual_words_for("ykbcx").is_empty());
+        assert!(db.manual_words_for("yakebicaixiang").is_empty(), "不能留下删不掉的游魂");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mixed_input_matches_manual_word() {
+        let (db, dir) = temp_db_with_pinyin(&yakebi_chars());
+        db.add_manual_word("ykbcx", "雅可比猜想", 3).unwrap();
+        assert_eq!(db.manual_words_mixed("yakebicx"), vec![("雅可比猜想".to_string(), 3)]);
+        assert_eq!(db.manual_words_mixed("yakebic"), vec![("雅可比猜想".to_string(), 3)]);
+        assert!(db.manual_words_mixed("yakebix").is_empty(), "跳着打不算合法混拼");
+        assert!(db.manual_words_mixed("xkbcx").is_empty(), "首字母不同不该命中");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn abbrev_prefix_match_rules() {
+        let sy = crate::syllable::Syllables::new();
+        let p = "yakebicaixiang";
+        for ok in ["ykbcx", "yakebicx", "yakebic", "yakebi", p, "yake"] {
+            assert!(abbrev_prefix_match(&sy, p, ok), "{ok} 应命中 {p}");
+        }
+        for bad in ["yakebix", "xkbcx", "yakebicaixiangx", "yakebicaiq"] {
+            assert!(!abbrev_prefix_match(&sy, p, bad), "{bad} 不该命中 {p}");
+        }
     }
 }

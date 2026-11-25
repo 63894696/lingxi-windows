@@ -47,9 +47,9 @@ IMM_REQUIRED = [
 # stage 里必须与构建产物一致的二进制（名字 → 期望来源）
 STAGE_BINARIES = {
     "prisir_ime.dll": "prisir_ime/target/release/prisir_ime.dll",
-    "prisir_ime_tsf.dll": "prisIragent_ime/target/release/prisiragent_ime.dll",
-    "prisir_tsfsvc.exe": "prisIragent_ime/target/release/prisir_tsfsvc.exe",
-    "prisir_hw.exe": "prisIragent_ime/target/release/prisir_hw.exe",
+    "prisir_ime_tsf.dll": "prisiragent_ime/target/release/prisiragent_ime.dll",
+    "prisir_tsfsvc.exe": "prisiragent_ime/target/release/prisir_tsfsvc.exe",
+    "prisir_hw.exe": "prisiragent_ime/target/release/prisir_hw.exe",
 }
 
 

@@ -40,7 +40,14 @@ type FnFree = unsafe extern "C" fn(*mut c_void);
 type FnUserList = unsafe extern "C" fn(*mut c_void) -> *mut c_char;
 type FnUserAdd = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> i32;
 type FnUserRemove = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> i32;
+// 2026-11-25 清理误学词:只给词就能删(不需要知道当初的输入串)。
+type FnUserRemoveValue = unsafe extern "C" fn(*mut c_void, *const c_char) -> i32;
+type FnUserSearch = unsafe extern "C" fn(*mut c_void, *const c_char, i32) -> *mut c_char;
 type FnUserClear = unsafe extern "C" fn(*mut c_void) -> i32;
+// 快捷造词(2026-11-25):按 pos 插位的写入口 + 编码推导。
+type FnUserAddPos = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, i64) -> i32;
+type FnAutoCode = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_char;
+type FnWordPinyin = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_char;
 // 主词库搜索(只读)。
 type FnDictSearch = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_char;
 // 主词库分页搜索 + 计数(2026-09-04 灵犀式分页)。
@@ -57,7 +64,6 @@ type FnMainUpsert = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_ch
 type FnMainMaxWeight = unsafe extern "C" fn(*mut c_void, *const c_char) -> i64;
 // P0 中英文自动判定(2026-11-16):0=空 1=拼音 2=英文 3=单字母存疑。
 type FnClassifyWith = unsafe extern "C" fn(*mut c_void, *const c_char, i32) -> i32;
-// P1 整句（仅多词整句，min_words 过滤）。
 // P2 简繁上屏前转换（原样模式时引擎原样返回）。
 type FnToTrad = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_char;
 // P2 简繁模式读写（0=原样 1=简→繁 2=繁→简）。
@@ -82,7 +88,13 @@ pub(crate) struct ImeDll {
     user_list: Option<FnUserList>,
     user_add: Option<FnUserAdd>,
     user_remove: Option<FnUserRemove>,
+    user_remove_value: Option<FnUserRemoveValue>,
+    user_search: Option<FnUserSearch>,
     user_clear: Option<FnUserClear>,
+    /// 快捷造词(2026-11-25):旧引擎 DLL 没有这三个导出 → Option,造词窗口提示升级引擎。
+    user_add_pos: Option<FnUserAddPos>,
+    auto_code: Option<FnAutoCode>,
+    word_pinyin: Option<FnWordPinyin>,
     dict_search: Option<FnDictSearch>,
     dict_search_page: Option<FnDictSearchPage>,
     dict_count: Option<FnDictCount>,
@@ -175,7 +187,12 @@ unsafe fn try_load_ime_dll() -> Result<ImeDll, String> {
         user_list: sym_opt!("prisir_ime_user_list", FnUserList),
         user_add: sym_opt!("prisir_ime_user_add", FnUserAdd),
         user_remove: sym_opt!("prisir_ime_user_remove", FnUserRemove),
+    user_remove_value: sym_opt!("prisir_ime_user_remove_value", FnUserRemoveValue),
+    user_search: sym_opt!("prisir_ime_user_search", FnUserSearch),
         user_clear: sym_opt!("prisir_ime_user_clear", FnUserClear),
+        user_add_pos: sym_opt!("prisir_ime_user_add_pos", FnUserAddPos),
+        auto_code: sym_opt!("prisir_ime_auto_code", FnAutoCode),
+        word_pinyin: sym_opt!("prisir_ime_word_pinyin", FnWordPinyin),
         dict_search: sym_opt!("prisir_ime_dict_search", FnDictSearch),
         dict_search_page: sym_opt!("prisir_ime_dict_search_page", FnDictSearchPage),
         dict_count: sym_opt!("prisir_ime_dict_count", FnDictCount),
@@ -474,11 +491,31 @@ pub(crate) fn user_dict_add(pinyin: &str, word: &str) -> bool {
 }
 
 /// 删除某条学习词,返回删除行数。不可用 → 0。
-pub(crate) fn user_dict_remove(pinyin: &str, word: &str) -> i32 {
+pub fn user_dict_remove(pinyin: &str, word: &str) -> i32 {
     let (Ok(dll), Some(h)) = (load_ime_dll(), mgmt_engine()) else { return 0; };
     let Some(f) = dll.user_remove else { return 0; };
     let (Ok(p), Ok(w)) = (CString::new(pinyin), CString::new(word)) else { return 0; };
     unsafe { f(h, p.as_ptr(), w.as_ptr()) }
+}
+
+/// 按词本身删除学习行(不传编码)。返回删除行数;旧 DLL 无此导出 → -1(调用方回退)。
+pub fn user_dict_remove_value(word: &str) -> i32 {
+    let (Ok(dll), Some(h)) = (load_ime_dll(), mgmt_engine()) else { return 0; };
+    let Some(f) = dll.user_remove_value else { return -1; };
+    let Ok(w) = CString::new(word) else { return 0; };
+    unsafe { f(h, w.as_ptr()) }
+}
+
+/// 在用户词层搜索(子串)。返回 JSON 字符串 [{"key","value","weight"}]。
+pub fn user_dict_search_json(term: &str, limit: i32) -> Option<String> {
+    let (Ok(dll), Some(h)) = (load_ime_dll(), mgmt_engine()) else { return None; };
+    let f = dll.user_search?;
+    let Ok(t) = CString::new(term) else { return None; };
+    let ptr = unsafe { f(h, t.as_ptr(), limit) };
+    if ptr.is_null() { return None; }
+    let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe { (dll.free_string)(ptr) };
+    Some(s)
 }
 
 /// 清空全部学习记录。可用且成功 → true。
@@ -486,6 +523,82 @@ pub(crate) fn user_dict_clear() -> bool {
     let (Ok(dll), Some(h)) = (load_ime_dll(), mgmt_engine()) else { return false; };
     let Some(f) = dll.user_clear else { return false; };
     unsafe { f(h) == 1 }
+}
+
+// ── 快捷造词(2026-11-25)────────────────────────────────────────────────────
+// 引擎侧写入口:`prisir_ime_user_add_pos` → `db.add_manual_word`,内部会写
+// 「全拼主行 + 简拼别名行」,所以全拼/简拼/混拼三种打法都能命中同一个词。
+
+/// 手工造词(指定候选位置)。引擎不支持 → false。
+pub(crate) fn user_dict_add_pos(pinyin: &str, word: &str, pos: i64) -> bool {
+    let (Ok(dll), Some(h)) = (load_ime_dll(), mgmt_engine()) else { return false; };
+    let Some(f) = dll.user_add_pos else { return false; };
+    let (Ok(p), Ok(w)) = (CString::new(pinyin), CString::new(word)) else { return false; };
+    unsafe { f(h, p.as_ptr(), w.as_ptr(), pos.clamp(1, 50)) == 1 }
+}
+
+/// 引擎自动拆简拼:"北京大学" → "bjdx"。算不出 → None。
+pub(crate) fn auto_code(word: &str) -> Option<String> {
+    let (Ok(dll), Some(h)) = (load_ime_dll(), mgmt_engine()) else { return None; };
+    let f = dll.auto_code?;
+    let w = CString::new(word).ok()?;
+    let ptr = unsafe { f(h, w.as_ptr()) };
+    if ptr.is_null() {
+        return None;
+    }
+    let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe { (dll.free_string)(ptr) };
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// 引擎按词反查全拼:"北京大学" → "beijingdaxue"(无空格)。算不出 → None。
+pub(crate) fn word_pinyin(word: &str) -> Option<String> {
+    let (Ok(dll), Some(h)) = (load_ime_dll(), mgmt_engine()) else { return None; };
+    let f = dll.word_pinyin?;
+    let w = CString::new(word).ok()?;
+    let ptr = unsafe { f(h, w.as_ptr()) };
+    if ptr.is_null() {
+        return None;
+    }
+    let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe { (dll.free_string)(ptr) };
+    let s = s.replace(' ', "");
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// 造一条手工词:编码优先用调用方给的,其次引擎全拼,最后引擎简拼。
+///
+/// 为什么优先**全拼**当主 key:手写词的 `key` 是查询主键,简拼只做别名行;
+/// 主行放全拼,`yakebicaixiang` / `ykbcx` / `yakebicx` 才能都命中(2026-11-25
+/// 测试机反馈:只写简拼时全拼打不出来)。纯英文词条没有拼音,直接用原文小写当编码。
+///
+/// 返回实际使用的编码;词条为空或编码完全推不出来 → Err(调用方据此提示用户手填)。
+pub fn add_word_auto(word: &str, pinyin: Option<&str>, pos: i64) -> Result<String, String> {
+    let word = word.trim();
+    if word.is_empty() {
+        return Err("词条为空".to_string());
+    }
+    if word.chars().count() > 30 {
+        return Err("词条太长(>30 字),像是一段话而不是词条".to_string());
+    }
+    let given = pinyin.map(|s| s.trim().replace(' ', "")).filter(|s| !s.is_empty());
+    let code = match given {
+        Some(g) => g,
+        None => word_pinyin(word).or_else(|| auto_code(word)).unwrap_or_else(|| {
+            if word.is_ascii() {
+                word.to_ascii_lowercase()
+            } else {
+                String::new()
+            }
+        }),
+    };
+    if code.is_empty() {
+        return Err(format!("算不出「{word}」的编码,请用 --pinyin 指定"));
+    }
+    if !user_dict_add_pos(&code, word, pos) {
+        return Err("写入词库失败(引擎未加载或词库不可写)".to_string());
+    }
+    Ok(code)
 }
 
 // ── 黑/白名单(2026-11-17)──────────────────────────────────────────────────

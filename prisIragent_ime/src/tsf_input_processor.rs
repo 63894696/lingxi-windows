@@ -60,6 +60,30 @@ fn ctrl_is_down() -> bool {
 fn alt_is_down() -> bool {
     unsafe { (GetAsyncKeyState(0x12) as u16 & 0x8000) != 0 }
 }
+
+/// Win 当前是否按下(左右 Win 任一)。
+fn win_is_down() -> bool {
+    unsafe {
+        let l = (GetAsyncKeyState(0x5B) as u16 & 0x8000) != 0;
+        let r = (GetAsyncKeyState(0x5C) as u16 & 0x8000) != 0;
+        l || r
+    }
+}
+
+/// 快捷造词热键(默认 Ctrl+Alt+E,2026-11-24 借鉴影子输入法)。
+///
+/// **2026-11-25 改为可配**:测试机上 Ctrl+Alt+E 被别的软件抢走,输入法根本收不到。
+/// 组合/开关读 `%LOCALAPPDATA%\Prisir\IME\quick_add_hotkey.json`
+/// (见 `hotkey::QuickAddHotkey`),`--quick-add-hotkey` 与托盘菜单可改;
+/// 配成 off 时这里恒 false,功能只从菜单「造词」进。
+///
+/// **判定只写这一份**:OnTestKeyDown「吃不吃」与 OnKeyDown「实际怎么处理」必须完全一致,
+/// 两侧不一致就会让 TSF 收到矛盾信号丢键(2026-09-01 实测:整键全无效)。
+fn is_quick_add_hotkey(vk: u16) -> bool {
+    crate::hotkey::load_quick_add().matches(
+        vk, ctrl_is_down(), alt_is_down(), shift_is_down(), win_is_down(),
+    )
+}
 // ──────────────────────────────────────────────────────────────────────
 
 /// Prisir IME 的 CLSID(与 register.rs:CLSID_PRISIR_IME_STR + com_class_factory.rs 一致)。
@@ -255,6 +279,7 @@ pub(crate) fn engine_handle_async() -> *mut std::ffi::c_void {
             ENGINE_BUILDING.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     }
+    // 注:每日活跃信号挂在 activate_inner(切输入法即触发),不在此(引擎预建要打字才到)。
     std::ptr::null_mut()
 }
 
@@ -391,6 +416,11 @@ impl TsfInputProcessor_Impl {
 
         // 1. 保存 ITfThreadMgr 句柄(便于后续 GetFocus / SetFocus 调用)
         inner.tim.lock().unwrap().replace(ptim.clone());
+
+        // 1a0. 每日活跃信号(2026-09-04):切到 Prisir 输入法即算「活跃」,不管打不打字。
+        //    挂 Activate 而非引擎预建(后者要真打字才触发;只翻菜单的用户统计不到)。
+        //    tick 内部按本地日去重 + 异步后台 GET,不卡激活线程,失败静默。
+        crate::active_signal::tick_daily_active();
 
         // 1a. 注册 ITfKeyEventSink — **不依赖 GetFocus,无条件最先武装**。
         //    2026-09-01 根因:Outlook/Win设置 等应用激活时 GetFocus 可能失败 → 旧代码走
@@ -681,6 +711,16 @@ impl ITfKeyEventSink_Impl for TsfInputProcessor_Impl {
         if (0x60..=0x6F).contains(&vk) {
             return Ok(BOOL(0));
         }
+        // 快捷造词热键(可配,默认 Ctrl+Alt+E):必须排在下面 Ctrl/Alt 放行**之前**,
+        // 因为组合里含 Ctrl+Alt —— 先放行就永远收不到(2026-11-24 首版踩过)。
+        if is_quick_add_hotkey(vk) {
+            #[cfg(feature = "dllentry_log")]
+            crate::com_class_factory::log_dll_entry(&format!("OnTestKeyDown: vk=0x{vk:02X} EAT(quick-add hotkey)"));
+            return Ok(BOOL(1));
+        }
+        // 幽灵 composition 自愈(见 heal_stale_composition 注释)。必须在判「放行/吃」之前:
+        // host 仍卡在 composition 里时,退格会被它吞掉,表现为「退格没反应」。
+        TsfInputProcessor::heal_stale_composition(_pic, &self.this);
         // Ctrl/Alt 按下时:字母/数字/标点一律放行(组合键 Ctrl+C/V/Z、Alt+F4 等归 app),
         // 不进入拼音。这是「Ctrl 组合键失效」的修复(2026-09-02)。必须 OnTest/OnKeyDown 一致。
         if ctrl_is_down() || alt_is_down() {
@@ -773,6 +813,39 @@ impl ITfKeyEventSink_Impl for TsfInputProcessor_Impl {
         let _kd_start = std::time::Instant::now();
         #[cfg(feature = "dllentry_log")]
         crate::com_class_factory::log_dll_entry(&format!("OnKeyDown: vk=0x{:02X}", vk));
+
+        // ───── 0. 快捷造词热键(可配,默认 Ctrl+Alt+E)─────
+        // 放在 Shift/CapsLock/Ctrl 放行之前:组合含 Ctrl+Alt,晚一步就会被当组合键放行。
+        if is_quick_add_hotkey(vk) {
+            // 当前 composition 里打了一半的拼音字母当编码提示(影子输入法的做法)。
+            let hint: String = {
+                let st = inner.state.lock().unwrap();
+                st.pinyin.buf.clone()
+            };
+            // 先把没提交的拼音收尾,否则造词窗口一开,host 里还挂着一截 composition。
+            if !hint.is_empty() {
+                let tid = *inner.client_tid.lock().unwrap();
+                if let Some(ctx) = TsfInputProcessor::get_active_ctx(pic, inner) {
+                    let st = crate::edit_session::EditSessionState {
+                        context: inner.context.clone(),
+                        composition: inner.composition.clone(),
+                        composition_range: inner.composition_range.clone(),
+                    };
+                    let _ = crate::edit_session::run_edit_session(
+                        tid, &ctx, st, crate::edit_session::DocOp::CancelComposition,
+                    );
+                }
+                inner.composition.lock().unwrap().take();
+                inner.composition_range.lock().unwrap().take();
+                inner.state.lock().unwrap().pinyin.reset();
+                crate::candidate_window::hide(&crate::candidate_window::global_state());
+            }
+            crate::quick_add_window::open_with_hint(&hint);
+            return Ok(BOOL::from(true)); // 吃
+        }
+
+        // 幽灵 composition 自愈(2026-11-25 修「回车提交英文后退格没反应」)。
+        TsfInputProcessor::heal_stale_composition(pic, inner);
 
         // ───── 0. Shift 按下:只吃掉,状态由 shift_is_down() 实时查询 ─────
         if vk == 0x10 {
@@ -1072,19 +1145,6 @@ impl ITfKeyEventSink_Impl for TsfInputProcessor_Impl {
                         );
                         #[cfg(feature = "dllentry_log")]
                         crate::com_class_factory::log_dll_entry(&format!("OnKeyDown: edit_session Commit '{}' ok={}", text, r.is_ok()));
-                        // 2026-11-21: Commit 拿不到写锁时 composition 残留 → 退格一段时间内被 IME 吞掉。
-                        // 失败则再 Cancel 一次，确保文档侧能删刚上屏的字。
-                        if r.is_err() {
-                            let st2 = crate::edit_session::EditSessionState {
-                                context: inner.context.clone(),
-                                composition: inner.composition.clone(),
-                                composition_range: inner.composition_range.clone(),
-                            };
-                            let _ = crate::edit_session::run_edit_session(
-                                tid, &ctx, st2,
-                                crate::edit_session::DocOp::CancelComposition,
-                            );
-                        }
                     }
                     // 提交后清空拼音缓冲 + 隐藏候选窗
                     inner.state.lock().unwrap().pinyin.reset();
@@ -1448,6 +1508,54 @@ impl TsfInputProcessor {
         pic.cloned().or_else(|| inner.context.lock().unwrap().clone())
     }
 
+    /// 自愈:IME 认为「没在打字」,但 host 侧 composition 还挂着 → 收尾掉。
+    ///
+    /// 2026-11-25 用户报「中文状态下中途打英文按回车上屏后,编辑框卡住,退格没反应,
+    /// 要选中再按 Del」的根因:
+    ///   1. 有拼音缓冲时按 Enter → `DocOp::Commit` 走 edit session 提交原始字母并 EndComposition。
+    ///      若这次 host 侧同步请求超时/被拒(Word、Electron 系、部分浏览器常见),
+    ///      `comp.EndComposition` 没真正落地,host 仍认为「有个 composition 在编辑中」;
+    ///   2. 而我们的 `pinyin.buf` 已经 reset 干净 → `buf_empty && cands_empty`;
+    ///   3. 下一次退格进 OnTestKeyDown:按 `buf_empty` 判「不在打字」→ 报**不吃**,
+    ///      OnKeyDown 也放行。但 host 侧正处在 composition 里,把退格当成
+    ///      composition 编辑键消费掉(或直接丢弃) → 表现为「退格毫无反应」;
+    ///   4. 用鼠标选中文字按 Del 能删,是因为选中会强制 host 结束/重置 composition。
+    ///
+    /// 处理:检测到这种「幽灵 composition」就先把它正常结束掉,再继续按键流程。
+    /// 返 true = 确实清理了一个残留 composition。
+    pub(crate) fn heal_stale_composition(pic: Option<&ITfContext>, inner: &TsfInputProcessor) -> bool {
+        {
+            let st = inner.state.lock().unwrap();
+            // 还在打字(pinyin 缓冲或候选非空)→ 这是真 composition,不许动。
+            if !st.pinyin.buf.is_empty() || !st.pinyin.candidates.is_empty() {
+                return false;
+            }
+        }
+        if inner.composition.lock().unwrap().is_none() {
+            return false;
+        }
+        let Some(ctx) = TsfInputProcessor::get_active_ctx(pic, inner) else {
+            return false;
+        };
+        let tid = *inner.client_tid.lock().unwrap();
+        let st = crate::edit_session::EditSessionState {
+            context: inner.context.clone(),
+            composition: inner.composition.clone(),
+            composition_range: inner.composition_range.clone(),
+        };
+        // 用 EndComposition 而不是 Cancel:host 侧留着一份空的/已提交的 composition 时,
+        // End 是唯一能让 host 干净退出的动作;Cancel 在部分 host 上会连带撤销提交内容。
+        let _ = crate::edit_session::run_edit_session(
+            tid, &ctx, st, crate::edit_session::DocOp::EndComposition,
+        );
+        inner.composition.lock().unwrap().take();
+        inner.composition_range.lock().unwrap().take();
+        crate::candidate_window::hide(&crate::candidate_window::global_state());
+        #[cfg(feature = "dllentry_log")]
+        crate::com_class_factory::log_dll_entry("heal_stale_composition: 清理了残留 composition");
+        true
+    }
+
     /// 处理非字母的"特殊键"——数字键选候选 / 空格选首位候选 / 退格删字符 / Esc 清空。
     /// 返回 Commit 上屏 / Handled 刷新了 buffer / Passthrough 放行给 app。
     pub(crate) fn handle_special(vk: u16, inner: &TsfInputProcessor) -> SpecialResult {
@@ -1489,16 +1597,34 @@ impl TsfInputProcessor {
                     SpecialResult::Passthrough
                 } else {
                     let h = state.engine_handle();
-                    // P0(2026-11-16):英文直通时既不跑整句也不学习,直接上屏原样字母。
+                    // P0(2026-11-16):英文直通时不上屏候选、不学习,直接上屏原样字母。
                     // on_space() 内部会 reset(),先把标志读出来。
                     let english = state.pinyin.english_passthrough;
-                    // 2026-11-21: 空格不再跑 smart_sentence 覆盖首选（才但/处来等字拼会挤掉菜单/出来）。
                     let buf_snap = state.pinyin.buf.clone(); // on_space 会 reset,先快照 buf 供 learn
+                    // 2026-11-25 用户报「候选窗显示 雅可比猜想,按空格却上屏 有啊可比出现」:
+                    // 这里原先在空格上屏前跑一次 smart_sentence 并**替换**空格会选中的候选。
+                    // 那是「所见 ≠ 所得」的根源 —— 候选窗里的 5 字词被 6 字乱句顶掉,
+                    // 还把这个乱句当成用户选择学进词库(`yakebicx → 有啊可比出现`)。
+                    // 用户决策:中间层直接删掉。上屏规则现在只有一条:
+                    //   **空格上屏的永远是候选窗第 1 行那个词**(on_space 返回 candidates[0])。
+                    // 整句能力不丢:需要整句时由引擎把整句作为**可见候选**给出
+                    // (engine::with_sentence_head),用户看得见再选,不存在暗中替换。
+                    //
+                    // 学习也只学「确实在候选窗里出现过的那条」(WYSIWYG),避免学进
+                    // 用户没选过的串。on_space 会 reset,所以先快照当前页候选。
+                    let shown: Vec<String> = state
+                        .pinyin
+                        .candidates
+                        .iter()
+                        .map(|c| c.word.clone())
+                        .collect();
                     match state.pinyin.on_space() {
                         Some(t) => {
                             // 学习:把选中词与本次拼音关联提频(2026-09-02 修「频率没效果」)。
-                            // 英文原样上屏不学(否则英文单词会被写进用户词库)。
-                            if !english {
+                            // 英文原样上屏不学(否则英文单词会被写进用户词库);
+                            // 不在候选快照里的串(词库无候选时 on_space 直接把拼音原样上屏)也不学。
+                            let learnable = !english && shown.iter().any(|w| *w == t);
+                            if learnable {
                                 if let (Ok(inp), Ok(sel)) = (
                                     std::ffi::CString::new(buf_snap),
                                     std::ffi::CString::new(t.clone()),

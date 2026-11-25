@@ -1,4 +1,4 @@
-   Compiling prisiragent_ime v0.7.0 (D:\Projects\lingxi-windows\prisIragent_ime)
+   Compiling prisiragent_ime v0.7.0 (D:\Projects\lingxi-windows\prisiragent_ime)
 warning: unused import: `WTS_INFO_CLASS`
    --> src\register.rs:412:22
     |
@@ -488,7 +488,7 @@ help: use `let _ = ...` to ignore the resulting value
 1103 |             let _ = LineTo(hdc, x, PAD + gh);
      |             +++++++
 
-warning: linker stdout: prisiragent_ime.dll.exp : warning LNK4070: .EXP 中的 /OUT:prisir_ime_tsf.dll 指令与输出文件名“D:\Projects\lingxi-windows\prisIragent_ime\target\release\build\prisiragent_ime\ca088e66acc2395d\out\prisiragent_ime.dll”不同；忽略指令
+warning: linker stdout: prisiragent_ime.dll.exp : warning LNK4070: .EXP 中的 /OUT:prisir_ime_tsf.dll 指令与输出文件名“D:\Projects\lingxi-windows\prisiragent_ime\target\release\build\prisiragent_ime\ca088e66acc2395d\out\prisiragent_ime.dll”不同；忽略指令
   |
   = note: `#[warn(linker_messages)]` on by default
 

@@ -1,7 +1,7 @@
 ﻿; PrisirAI v1.0 NSIS 安装脚本
 ;
 ; 目标:把 dist/PrisirAI.exe + dist/assets + prisiragent-shell/ 装到目标机,
-; 创建桌面 + 开始菜单快捷方式(指向 launcher.bat,图标 prisIragent-tauri/src-tauri/icons/icon.ico),
+; 创建桌面 + 开始菜单快捷方式(指向 launcher.bat,图标 prisiragent-tauri/src-tauri/icons/icon.ico),
 ; 注册卸载器。
 ;
 ; 编译: makensis prisirai.nsi → ../dist/PrisirAI-Setup-1.0.0.exe
@@ -49,8 +49,8 @@ SetDatablockOptimize on
 !include "MUI2.nsh"
 
 !define MUI_ABORTWARNING
-!define MUI_ICON "..\prisIragent-tauri\src-tauri\icons\icon.ico"
-!define MUI_UNICON "..\prisIragent-tauri\src-tauri\icons\icon.ico"
+!define MUI_ICON "..\prisiragent-tauri\src-tauri\icons\icon.ico"
+!define MUI_UNICON "..\prisiragent-tauri\src-tauri\icons\icon.ico"
 
 ; MUI 界面文案走 LangString(安装器运行时按 $LANGUAGE 取值);LangString 在 MUI_LANGUAGE 后定义
 
