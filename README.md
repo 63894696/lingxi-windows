@@ -1,4 +1,4 @@
-﻿# 灵犀拼音 · Windows
+# 灵犀拼音 · Windows
 
 本地中文拼音输入法（Windows TSF）。与 [Android](https://github.com/63894696/lingxi-android)、[Linux](https://github.com/63894696/lingxi-linux) 共用同一套 Rust 引擎，候选、整句与词库学习行为一致。
 
